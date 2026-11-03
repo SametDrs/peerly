@@ -53,7 +53,15 @@ Dependency direction: `proto` ← `transfer`, `pairing` ← `core` ← `cli`, `d
    candidates; receiver tries all candidates in parallel (LAN first), first
    handshake wins. Both sides pin the peer's cert fingerprint (mutual TLS, no CA).
    ALPN `peerly/1`.
-6. Rendezvous connection is closed. File data never touches the server.
+6. The receiver may complete several handshakes in parallel; it opens a uni
+   stream on the one it picked and writes a single byte `0x01`. The sender keeps
+   that connection and drops the rest. `peerly-transfer` never sees this stream.
+7. Rendezvous connection is closed. File data never touches the server.
+
+Pairing timeouts: rendezvous connect 10 s, each relay exchange step 30 s, direct
+connect 15 s (`PeerUnreachable`). Waiting for a receiver has no timeout besides
+the server's nameplate TTL. Typos in the words give `InvalidCode` locally (both
+words must be in the list), so they don't burn the nameplate. IPv4 only in v1.
 
 **Relay fallback** (symmetric NAT, both sides): not in v1. Pairing reports
 `PeerUnreachable`. The design leaves room for a relay later (TURN-like, still E2E
