@@ -29,8 +29,6 @@ cargo run -p peerly-cli -- receive <code> --to <dir>
 Pairing needs no server: LAN (mDNS + TCP mailbox) and internet (BitTorrent Mainline DHT mailbox + public STUN) are on by default. `PEERLY_RENDEZVOUS` (or `--rendezvous`) additionally enables a rendezvous server. `PEERLY_NO_LAN=1` / `PEERLY_NO_DHT=1` disable those mailboxes. Offline DHT tests use mainline's local testnet (~15 s). Tests touching real mDNS / public DHT / STUN are `#[ignore]`: `cargo test -p peerly-pairing -- --ignored`.
 Desktop app: `cd apps/desktop; npm install; npm run tauri dev`.
 
-`spike-quic/` is a throwaway Stage 0 speed test, excluded from the workspace (build it from inside its own folder).
-
 ## Architecture
 
 Read `docs/architecture.md` before changing anything that crosses crate boundaries. Key points:
@@ -43,6 +41,6 @@ Read `docs/architecture.md` before changing anything that crosses crate boundari
 - **Transfer:** sender opens one bi control stream (`Offer` → `Accept`/`Reject` → … → `Done`), then one uni stream per file (several in parallel): header frame + raw bytes + 32-byte BLAKE3 trailer. Receiver writes `*.peerly-part`, verifies, renames. Receivers must re-validate every manifest path (no absolute paths, `..`, drive letters, reserved Windows names).
 - **Desktop events:** `peerly_core::Event` is serde-tagged (`{"kind": ...}`) and emitted on Tauri event `peerly://event`. The webview never supplies file paths (security review SEC-01): Rust owns the send selection and receive destination (`pick_files`, `pick_folder`, `pick_dest_dir`, OS drag-drop events → `peerly://selection`), and `start_send()` / `start_receive(code)` / `open_folder()` act on that state. The only capability is `core:default`.
 
-## Team workflow
+## Conventions
 
-Work is split among sub-agents with path ownership — see `docs/team.md`. `peerly-proto`, `docs/architecture.md` and the root `Cargo.toml` are coordinator-owned; add new dependencies to the individual crate's `Cargo.toml`, not the workspace root.
+Add new dependencies to the individual crate's `Cargo.toml`, not the workspace root.

@@ -30,7 +30,6 @@ bytes flow peer-to-peer over QUIC. No server ever sees file contents.
 | `crates/peerly-rendezvous` | bin | Public server. Nameplate allocation, relay, UDP reflexive address probe. Stateless besides in-memory nameplates. |
 | `crates/peerly-cli` | bin `peerly` | `peerly send <paths...>` / `peerly receive <code> [--to dir]`. Testing and power users. |
 | `apps/desktop` | Tauri 2 app | Svelte + TS UI. Rust side calls `peerly-core` and forwards `Event`s to the webview. |
-| `spike-quic/` | throwaway | Stage 0 speed test. Not part of the workspace. |
 
 Dependency direction: `proto` ← `transfer`, `pairing` ← `core` ← `cli`, `desktop`. `rendezvous` depends only on `proto`.
 
@@ -137,8 +136,8 @@ Contract details:
 - Senders validate their own manifest with the same path rules and fail early with `UnsafePath`. Duplicate paths are compared case-insensitively on Windows and macOS.
 - Existing files are never overwritten: a colliding top-level item becomes `name (1).ext` / `folder (1)`. Files are not fsynced before rename (small-file speed).
 
-QUIC transport is tuned for throughput (large stream/connection windows, see
-the spike: 64 MiB stream / 128 MiB connection).
+QUIC transport is tuned for throughput (large stream/connection windows:
+64 MiB stream / 128 MiB connection).
 
 ## Events (UI contract)
 
