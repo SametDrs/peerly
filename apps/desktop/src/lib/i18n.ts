@@ -18,8 +18,12 @@ const en = {
   copied: "Copied",
   waiting: "Waiting for the receiver…",
   shareCode: "Tell the receiver this code. It works only once.",
+  waitingHint: "The code works on the same Wi-Fi or over the internet.",
+  connectingHint: "Looking on your local network and the internet. This can take a few seconds.",
+  routeLan: "Local network",
+  routeInternet: "Internet",
   enterCode: "Enter the code",
-  codePlaceholder: "42-river-candle",
+  codePlaceholder: "4821-river-candle",
   saveTo: "Save to",
   change: "Change",
   connect: "Connect",
@@ -49,7 +53,7 @@ const en = {
   err_wrong_code: "That code did not match. Check it and try again.",
   err_code_not_found: "This code does not exist or has expired.",
   err_code_in_use: "This code is already in use. Start again for a new one.",
-  err_invalid_code: "That does not look like a valid code (e.g. 42-river-candle).",
+  err_invalid_code: "That does not look like a valid code (e.g. 4821-river-candle).",
   err_rendezvous_unreachable: "Could not reach the Peerly server. Check your internet connection.",
   err_peer_unreachable: "Could not make a direct connection to the other device.",
   err_peer_left: "The other device disconnected.",
@@ -58,6 +62,7 @@ const en = {
   err_peer_cancelled: "The other side cancelled the transfer.",
   err_disk_full: "Not enough free disk space for these files.",
   err_hash_mismatch: "A file arrived damaged. Please try again.",
+  hintPeer: "Check the code, and make sure both devices are online. On Windows, allow Peerly through the firewall when asked. Some networks (corporate Wi-Fi, mobile hotspots) block direct connections.",
   err_other: "The transfer could not be completed.",
   unknown: "—",
 };
@@ -82,8 +87,12 @@ const tr: typeof en = {
   copied: "Kopyalandı",
   waiting: "Alıcı bekleniyor…",
   shareCode: "Bu kodu alıcıya söyleyin. Yalnızca bir kez çalışır.",
+  waitingHint: "Kod aynı Wi-Fi ağında da internet üzerinden de çalışır.",
+  connectingHint: "Yerel ağda ve internette aranıyor. Bu birkaç saniye sürebilir.",
+  routeLan: "Yerel ağ",
+  routeInternet: "İnternet",
   enterCode: "Kodu girin",
-  codePlaceholder: "42-nehir-mum",
+  codePlaceholder: "4821-nehir-mum",
   saveTo: "Kaydedilecek yer",
   change: "Değiştir",
   connect: "Bağlan",
@@ -113,7 +122,7 @@ const tr: typeof en = {
   err_wrong_code: "Kod eşleşmedi. Kontrol edip tekrar deneyin.",
   err_code_not_found: "Bu kod yok ya da süresi dolmuş.",
   err_code_in_use: "Bu kod zaten kullanımda. Yeni bir kod için baştan başlayın.",
-  err_invalid_code: "Bu geçerli bir koda benzemiyor (örn. 42-nehir-mum).",
+  err_invalid_code: "Bu geçerli bir koda benzemiyor (örn. 4821-nehir-mum).",
   err_rendezvous_unreachable: "Peerly sunucusuna ulaşılamadı. İnternet bağlantınızı kontrol edin.",
   err_peer_unreachable: "Diğer cihazla doğrudan bağlantı kurulamadı.",
   err_peer_left: "Diğer cihazın bağlantısı koptu.",
@@ -122,9 +131,12 @@ const tr: typeof en = {
   err_peer_cancelled: "Karşı taraf aktarımı iptal etti.",
   err_disk_full: "Bu dosyalar için diskte yeterli boş alan yok.",
   err_hash_mismatch: "Bir dosya bozuk ulaştı. Lütfen tekrar deneyin.",
+  hintPeer: "Kodu kontrol edin ve iki cihazın da çevrimiçi olduğundan emin olun. Windows'ta sorulursa Peerly'ye güvenlik duvarında izin verin. Bazı ağlar (kurumsal Wi-Fi, mobil hotspot) doğrudan bağlantıyı engeller.",
   err_other: "Aktarım tamamlanamadı.",
   unknown: "—",
 };
+
+export const PEER_HINT_CODES = ["code_not_found", "peer_unreachable", "timeout", "wrong_code", "rendezvous_unreachable"];
 
 export const ERR_CODES = ["wrong_code", "code_not_found", "code_in_use", "invalid_code", "rendezvous_unreachable", "peer_unreachable", "peer_left", "timeout", "rejected", "peer_cancelled", "disk_full", "hash_mismatch", "other"];
 

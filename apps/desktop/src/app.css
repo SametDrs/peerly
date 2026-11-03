@@ -93,3 +93,12 @@ input.codeinput:focus { border-color: var(--accent); }
 .err { color: var(--danger); }
 .path { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
 details { font-size: 12px; color: var(--muted); }
+
+.badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid currentColor;
+  opacity: 0.8;
+}

@@ -4,7 +4,7 @@
   import { openPath } from "@tauri-apps/plugin-opener";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import * as api from "./lib/api";
-  import { ERR_CODES } from "./lib/i18n";
+  import { ERR_CODES, PEER_HINT_CODES } from "./lib/i18n";
   import { t, formatBytes, formatDuration, type Key } from "./lib/i18n";
 
   type Screen = "home" | "pick" | "code" | "enter" | "offer" | "progress" | "done" | "error";
@@ -32,6 +32,7 @@
   let summary = $state({ files: 0, bytes: 0, elapsed_ms: 0 });
   let errorMsg = $state("");
   let errorCode = $state("other");
+  let route = $state<"lan" | "internet" | "">("");
   const errKeys: Record<string, true> = Object.fromEntries(ERR_CODES.map((c) => [`err_${c}`, true]));
 
   const pct = $derived(total > 0 ? Math.min(100, (done / total) * 100) : 0);
@@ -49,6 +50,7 @@
     done = total = speed = 0;
     currentFile = "";
     errorMsg = "";
+    route = "";
   }
 
   async function goBackAndCancel() {
@@ -73,6 +75,9 @@
         break;
       case "connecting":
         connecting = true;
+        break;
+      case "connected":
+        route = e.route === "lan" ? "lan" : e.route === "internet" ? "internet" : "";
         break;
       case "offer":
         offer = e;
@@ -124,6 +129,7 @@
 
   async function startSend() {
     role = "send";
+    route = "";
     done = total = speed = 0;
     try {
       await api.startSend(paths);
@@ -134,6 +140,7 @@
 
   async function startReceive() {
     done = total = speed = 0;
+    route = "";
     connecting = true;
     try {
       await api.startReceive(normalizeCode(codeInput), dest);
@@ -229,6 +236,7 @@
     <div class="card"><div class="code">{code}</div></div>
     <button onclick={copyCode}>{copied ? t("copied") : t("copy")}</button>
     <p class="muted center">{t("shareCode")}</p>
+    <p class="muted center">{t("waitingHint")}</p>
     <div class="grow"></div>
     <p class="center"><span class="pulse"></span>{t("waiting")}</p>
     <button class="danger" onclick={goBackAndCancel}>{t("cancel")}</button>
@@ -246,6 +254,13 @@
         spellcheck="false"
         placeholder={t("codePlaceholder")}
         bind:value={codeInput}
+        onpaste={(e) => {
+          const txt = e.clipboardData?.getData("text");
+          if (txt) {
+            e.preventDefault();
+            codeInput = normalizeCode(txt);
+          }
+        }}
         disabled={connecting}
         onkeydown={(e) => e.key === "Enter" && codeInput.trim() && !connecting && startReceive()}
       />
@@ -258,12 +273,14 @@
     <div class="grow"></div>
     {#if connecting}
       <p class="center"><span class="pulse"></span>{t("connecting")}</p>
+      <p class="muted center">{t("connectingHint")}</p>
       <button class="danger" onclick={goBackAndCancel}>{t("cancel")}</button>
     {:else}
       <button class="primary" disabled={!codeInput.trim()} onclick={startReceive}>{t("connect")}</button>
     {/if}
   {:else if screen === "offer" && offer}
     <div class="grow"></div>
+    {#if route}<p class="center"><span class="badge">{route === "lan" ? t("routeLan") : t("routeInternet")}</span></p>{/if}
     <p class="center muted">{t("from")}</p>
     <div class="card col center">
       <h2>{offer.name}</h2>
@@ -277,6 +294,7 @@
     </div>
   {:else if screen === "progress"}
     <div class="grow"></div>
+    {#if route}<p class="center"><span class="badge">{route === "lan" ? t("routeLan") : t("routeInternet")}</span></p>{/if}
     <p class="center muted">{role === "send" ? t("sending") : t("receiving")}</p>
     <div class="big">{pct.toFixed(0)}%</div>
     <div class="bar"><div style="width: {pct}%"></div></div>
@@ -308,6 +326,7 @@
     <div class="grow"></div>
     <h2 class="center err">{t("errorTitle")}</h2>
     <p class="center">{friendly(errorCode)}</p>
+    {#if PEER_HINT_CODES.includes(errorCode)}<p class="center muted">{t("hintPeer")}</p>{/if}
     <details>
       <summary>{t("details")}</summary>
       <p style="user-select: text">{errorMsg}</p>
