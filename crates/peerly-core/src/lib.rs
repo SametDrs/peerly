@@ -209,7 +209,13 @@ pub async fn send(
     cancel: CancellationToken,
 ) -> Result<(), Error> {
     let pcfg = cfg.pairing();
-    let pending = peerly_pairing::allocate(&pcfg).await?;
+    // Allocation can take seconds (DHT lookup), so it must honour cancel too;
+    // otherwise a cancelled send would still pop up a code afterwards.
+    let pending = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(Error::Cancelled),
+        r = peerly_pairing::allocate(&pcfg) => r?,
+    };
     let _ = events.send(Event::Code {
         code: pending.code().to_string(),
     });

@@ -178,6 +178,20 @@ fn walk(path: &Path, info: &mut PathsInfo, depth: u32) {
 }
 
 /// File count and total size of the selection (folders are walked recursively).
+/// Opens a directory in the system file manager. Only existing directories are
+/// accepted, so the webview cannot use this to launch files or programs.
+#[tauri::command]
+fn open_folder(app: AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = Path::new(&path);
+    if !dir.is_dir() {
+        return Err("not a directory".into());
+    }
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn inspect_paths(paths: Vec<String>) -> PathsInfo {
     tauri::async_runtime::spawn_blocking(move || {
@@ -203,6 +217,7 @@ pub fn run() {
             respond_offer,
             cancel,
             default_download_dir,
+            open_folder,
             inspect_paths
         ])
         .run(tauri::generate_context!())

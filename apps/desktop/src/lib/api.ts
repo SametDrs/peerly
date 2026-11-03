@@ -22,5 +22,6 @@ export const startReceive = (code: string, dest: string) => invoke<void>("start_
 export const respondOffer = (accept: boolean) => invoke<void>("respond_offer", { accept });
 export const cancel = () => invoke<void>("cancel");
 export const defaultDownloadDir = () => invoke<string>("default_download_dir");
+export const openFolder = (path: string) => invoke<void>("open_folder", { path });
 export const inspectPaths = (paths: string[]) =>
   invoke<{ files: number; bytes: number }>("inspect_paths", { paths });

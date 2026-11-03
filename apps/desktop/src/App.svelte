@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
-  import { openPath } from "@tauri-apps/plugin-opener";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import * as api from "./lib/api";
   import { ERR_CODES, PEER_HINT_CODES } from "./lib/i18n";
@@ -23,6 +22,8 @@
   let codeInput = $state("");
   let dest = $state("");
   let connecting = $state(false);
+  /** Sender: between "Start" and the code appearing (DHT lookup, a few seconds). */
+  let preparing = $state(false);
   let offer = $state<{ name: string; files: number; total_bytes: number } | null>(null);
   // progress
   let done = $state(0);
@@ -47,6 +48,7 @@
     codeInput = "";
     offer = null;
     connecting = false;
+    preparing = false;
     done = total = speed = 0;
     currentFile = "";
     errorMsg = "";
@@ -71,6 +73,7 @@
     switch (e.kind) {
       case "code":
         code = e.code;
+        preparing = false;
         screen = "code";
         break;
       case "connecting":
@@ -103,6 +106,7 @@
       case "error":
         errorMsg = e.message;
         errorCode = e.code;
+        preparing = false;
         screen = "error";
         break;
     }
@@ -130,6 +134,7 @@
   async function startSend() {
     role = "send";
     route = "";
+    preparing = true;
     done = total = speed = 0;
     try {
       await api.startSend(paths);
@@ -174,7 +179,7 @@
     unsubs.push(
       getCurrentWebview().onDragDropEvent((ev) => {
         const p = ev.payload;
-        const accepting = screen === "home" || screen === "pick";
+        const accepting = (screen === "home" || screen === "pick") && !preparing;
         if (p.type === "enter" || p.type === "over") dragging = accepting;
         else if (p.type === "leave") dragging = false;
         else if (p.type === "drop") {
@@ -205,20 +210,20 @@
       </button>
     </div>
   {:else if screen === "pick"}
-    <button class="link" onclick={reset}>← {t("back")}</button>
+    <button class="link" onclick={reset} disabled={preparing}>← {t("back")}</button>
     <h2>{t("send")}</h2>
     <div class="drop" class:active={dragging}>
       <p>{t("dropHere")}</p>
     </div>
     <div class="row">
-      <button onclick={chooseFiles}>{t("chooseFiles")}</button>
-      <button onclick={chooseFolder}>{t("chooseFolder")}</button>
+      <button onclick={chooseFiles} disabled={preparing}>{t("chooseFiles")}</button>
+      <button onclick={chooseFolder} disabled={preparing}>{t("chooseFolder")}</button>
     </div>
     {#if paths.length}
       <div class="card col" style="gap: 8px">
         <div class="row" style="justify-content: space-between">
           <b style="flex: none">{t("selected", { n: t("items", { n: paths.length }) })}</b>
-          <button class="link" style="flex: none; text-align: right" onclick={() => { paths = []; info = null; }}>{t("clear")}</button>
+          <button class="link" disabled={preparing} style="flex: none; text-align: right" onclick={() => { paths = []; info = null; }}>{t("clear")}</button>
         </div>
         {#each paths.slice(0, 4) as p}
           <div class="path">{baseName(p)}</div>
@@ -230,7 +235,12 @@
       </div>
     {/if}
     <div class="grow"></div>
-    <button class="primary" disabled={!paths.length} onclick={startSend}>{t("start")}</button>
+    {#if preparing}
+      <p class="center"><span class="spinner"></span>{t("preparing")}</p>
+      <button class="danger" onclick={goBackAndCancel}>{t("cancel")}</button>
+    {:else}
+      <button class="primary" disabled={!paths.length} onclick={startSend}>{t("start")}</button>
+    {/if}
   {:else if screen === "code"}
     <h2>{t("yourCode")}</h2>
     <div class="card"><div class="code">{code}</div></div>
@@ -272,7 +282,7 @@
     </div>
     <div class="grow"></div>
     {#if connecting}
-      <p class="center"><span class="pulse"></span>{t("connecting")}</p>
+      <p class="center"><span class="spinner"></span>{t("connecting")}</p>
       <p class="muted center">{t("connectingHint")}</p>
       <button class="danger" onclick={goBackAndCancel}>{t("cancel")}</button>
     {:else}
@@ -319,7 +329,7 @@
     </p>
     <div class="grow"></div>
     {#if role === "receive"}
-      <button onclick={() => openPath(dest)}>{t("openFolder")}</button>
+      <button onclick={() => api.openFolder(dest)}>{t("openFolder")}</button>
     {/if}
     <button class="primary" onclick={reset}>{t(role === "send" ? "sendAnother" : "receiveAnother")}</button>
   {:else if screen === "error"}
