@@ -1,0 +1,95 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7fb;
+  --card: #ffffff;
+  --text: #14161f;
+  --muted: #6b7185;
+  --border: #e3e6ef;
+  --accent: #4f46e5;
+  --accent-text: #ffffff;
+  --danger: #dc2626;
+  --ok: #16a34a;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1117;
+    --card: #181b25;
+    --text: #eef0f7;
+    --muted: #8b91a7;
+    --border: #2a2e3d;
+    --accent: #7c75ff;
+    --accent-text: #0f1117;
+    --danger: #f87171;
+    --ok: #4ade80;
+  }
+}
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--text); font-size: 15px; user-select: none; }
+input, button { font: inherit; color: inherit; }
+
+main { height: 100%; display: flex; flex-direction: column; padding: 24px; gap: 16px; overflow-y: auto; }
+h1 { font-size: 28px; margin: 0; letter-spacing: -0.5px; }
+h2 { font-size: 20px; margin: 0; }
+p { margin: 0; }
+.muted { color: var(--muted); }
+.center { text-align: center; }
+.grow { flex: 1; }
+.col { display: flex; flex-direction: column; gap: 14px; }
+.row { display: flex; gap: 10px; align-items: center; }
+.row > * { flex: 1; }
+
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 18px; }
+button {
+  border: 1px solid var(--border); background: var(--card); border-radius: 12px;
+  padding: 11px 16px; cursor: pointer; transition: transform 0.08s, background 0.15s;
+}
+button:hover { background: color-mix(in srgb, var(--card) 85%, var(--accent) 15%); }
+button:active { transform: scale(0.98); }
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 600; }
+button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+button.danger { color: var(--danger); }
+button.link { border: none; background: none; padding: 4px 0; color: var(--muted); text-align: left; width: fit-content; }
+
+.choices { display: grid; gap: 14px; flex: 1; align-content: center; }
+.choice {
+  display: flex; flex-direction: column; gap: 6px; align-items: flex-start; text-align: left;
+  padding: 26px 22px; border-radius: 20px;
+}
+.choice .title { font-size: 24px; font-weight: 700; }
+.choice .desc { color: var(--muted); font-size: 14px; }
+.choice.primary .desc { color: inherit; opacity: 0.8; }
+
+.drop {
+  border: 2px dashed var(--border); border-radius: 18px; padding: 34px 16px; text-align: center;
+  color: var(--muted); transition: border-color 0.15s, background 0.15s;
+}
+.drop.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+
+.code {
+  font-family: "Cascadia Mono", Consolas, monospace; font-size: 30px; font-weight: 700;
+  text-align: center; padding: 22px 8px; word-break: break-all; user-select: text; letter-spacing: 0.5px;
+}
+input.codeinput {
+  width: 100%; padding: 16px; font-size: 22px; text-align: center; border-radius: 14px;
+  border: 2px solid var(--border); background: var(--card); outline: none;
+  font-family: "Cascadia Mono", Consolas, monospace; user-select: text;
+}
+input.codeinput:focus { border-color: var(--accent); }
+
+.bar { height: 12px; background: var(--border); border-radius: 99px; overflow: hidden; }
+.bar > div { height: 100%; background: var(--accent); border-radius: 99px; transition: width 0.15s linear; }
+.big { font-size: 44px; font-weight: 700; text-align: center; letter-spacing: -1px; }
+.stats { display: flex; justify-content: space-around; text-align: center; }
+.stats b { display: block; font-size: 17px; }
+.stats span { font-size: 12px; color: var(--muted); }
+.file { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; font-size: 13px; color: var(--muted); min-height: 1.3em; }
+
+.pulse { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); margin-right: 8px; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+.check { font-size: 56px; text-align: center; color: var(--ok); }
+.err { color: var(--danger); }
+.path { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
+details { font-size: 12px; color: var(--muted); }
