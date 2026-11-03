@@ -63,6 +63,29 @@ connect 15 s (`PeerUnreachable`). Waiting for a receiver has no timeout besides
 the server's nameplate TTL. Typos in the words give `InvalidCode` locally (both
 words must be in the list), so they don't burn the nameplate. IPv4 only in v1.
 
+### Mailboxes (how the pairing messages travel)
+
+Steps 3–4 only need a channel for a handful of opaque messages, called a
+*mailbox*. The rendezvous server is one mailbox and is **optional**:
+
+| Mailbox | When | Notes |
+|---|---|---|
+| LAN (mDNS + TCP) | always on unless `PEERLY_NO_LAN=1` | No server. See below. |
+| Rendezvous (WebSocket) | only if `PEERLY_RENDEZVOUS` / `--rendezvous` is set | As described above. |
+| DHT | planned | Internet pairing without our own server (BitTorrent Mainline DHT + public STUN). |
+
+**LAN mode** (`peerly_proto::lan`): the sender listens on TCP and advertises the
+mDNS service `_peerly._tcp.local.` with TXT `np=<nameplate>`, `v=<version>`.
+Without a rendezvous server, the sender generates the nameplate itself (1..=999).
+The receiver browses for about 2 s, connects to each match, sends
+`frame(LanHello)`, and then the same `PairingMsg` sequence runs over
+length-prefixed frames. Several senders on one LAN can share a nameplate, so the
+sender tolerates up to 3 failed SPAKE attempts on the LAN mailbox before giving
+up. That is still about 3 guesses in a million. The sender races all of its
+mailboxes and the first completed pairing wins. The listener and the mDNS
+advertisement are torn down as soon as pairing ends, fails or is cancelled.
+The LAN path skips the UDP probe; candidates are LAN addresses only.
+
 **Relay fallback** (symmetric NAT, both sides): not in v1. Pairing reports
 `PeerUnreachable`. The design leaves room for a relay later (TURN-like, still E2E
 encrypted by QUIC).

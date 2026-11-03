@@ -23,20 +23,29 @@ pub(crate) struct Local {
     pub identity: Identity,
 }
 
-pub(crate) async fn prepare(rendezvous_url: &str) -> Result<Local, PairingError> {
+/// Binds the QUIC socket and collects candidates. With `probe_url` (rendezvous
+/// pairing) the reflexive address is probed; without it (LAN pairing) only
+/// local interface addresses are used.
+pub(crate) async fn prepare(probe_url: Option<&str>) -> Result<Local, PairingError> {
     let std_sock = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
     std_sock.set_nonblocking(true)?;
     let sock = UdpSocket::from_std(std_sock)?;
-    let reflexive = match probe_target(rendezvous_url).await {
-        Some(server) => probe(&sock, server).await,
-        None => None,
-    };
-    if reflexive.is_none() {
-        tracing::warn!("no UDP probe answer from rendezvous; using LAN candidates only");
+    let mut reflexive = None;
+    if let Some(url) = probe_url {
+        if let Some(server) = probe_target(url).await {
+            reflexive = probe(&sock, server).await;
+        }
+        if reflexive.is_none() {
+            tracing::warn!("no UDP probe answer from rendezvous; using LAN candidates only");
+        }
     }
     let socket = sock.into_std()?;
     let port = socket.local_addr()?.port();
     let mut candidates = lan_addrs(port);
+    if candidates.is_empty() && reflexive.is_none() {
+        // No usable interface: at least allow peers on the same machine.
+        candidates.push(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port));
+    }
     if let Some(r) = reflexive
         && !candidates.contains(&r)
     {

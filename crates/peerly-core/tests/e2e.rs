@@ -14,8 +14,10 @@ async fn start_server() -> Config {
     let server = Server::bind(cfg).await.unwrap();
     let addr = server.local_addr();
     tokio::spawn(server.run());
+    // LAN off: keeps these tests deterministic (no mDNS on the test host).
     Config {
-        rendezvous_url: format!("ws://{addr}"),
+        rendezvous_url: Some(format!("ws://{addr}")),
+        lan: false,
     }
 }
 
@@ -57,7 +59,22 @@ fn same_tree(a: &Path, b: &Path) {
 
 #[tokio::test]
 async fn roundtrip_folder() {
-    let cfg = start_server().await;
+    roundtrip(start_server().await).await;
+}
+
+/// Serverless: mDNS discovery + LAN mailbox only. Needs multicast on the host:
+/// `cargo test -p peerly-core -- --ignored`.
+#[tokio::test]
+#[ignore = "needs working multicast (mDNS)"]
+async fn roundtrip_folder_lan_only() {
+    roundtrip(Config {
+        rendezvous_url: None,
+        lan: true,
+    })
+    .await;
+}
+
+async fn roundtrip(cfg: Config) {
     let src = tempfile::tempdir().unwrap();
     let dst = tempfile::tempdir().unwrap();
     let dir = make_tree(src.path());

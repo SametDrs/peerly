@@ -16,19 +16,48 @@ pub use peerly_pairing::Route;
 pub use peerly_proto::transfer::Manifest;
 use peerly_transfer::TransferEvent;
 
+/// Address of a locally run rendezvous server (`peerly-rendezvous` default port).
+/// Not used unless configured: the rendezvous server is optional.
 pub const DEFAULT_RENDEZVOUS: &str = "ws://127.0.0.1:9009";
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub rendezvous_url: String,
+    /// Optional rendezvous server for pairing across the internet.
+    pub rendezvous_url: Option<String>,
+    /// Serverless pairing on the local network (mDNS).
+    pub lan: bool,
+}
+
+impl Default for Config {
+    /// LAN pairing only, no server.
+    fn default() -> Self {
+        Self {
+            rendezvous_url: None,
+            lan: true,
+        }
+    }
 }
 
 impl Config {
-    /// `PEERLY_RENDEZVOUS` env var, else [`DEFAULT_RENDEZVOUS`].
+    /// `PEERLY_RENDEZVOUS` set (non-empty) enables the rendezvous server;
+    /// `PEERLY_NO_LAN=1` disables LAN pairing.
     pub fn from_env() -> Self {
         Self {
             rendezvous_url: std::env::var("PEERLY_RENDEZVOUS")
-                .unwrap_or_else(|_| DEFAULT_RENDEZVOUS.to_string()),
+                .ok()
+                .map(|u| u.trim().to_string())
+                .filter(|u| !u.is_empty()),
+            lan: !matches!(
+                std::env::var("PEERLY_NO_LAN").as_deref().map(str::trim),
+                Ok("1")
+            ),
+        }
+    }
+
+    fn pairing(&self) -> peerly_pairing::Config {
+        peerly_pairing::Config {
+            rendezvous_url: self.rendezvous_url.clone(),
+            lan: self.lan,
         }
     }
 }
@@ -173,9 +202,7 @@ pub async fn send(
     events: UnboundedSender<Event>,
     cancel: CancellationToken,
 ) -> Result<(), Error> {
-    let pcfg = peerly_pairing::Config {
-        rendezvous_url: cfg.rendezvous_url.clone(),
-    };
+    let pcfg = cfg.pairing();
     let pending = peerly_pairing::allocate(&pcfg).await?;
     let _ = events.send(Event::Code {
         code: pending.code().to_string(),
@@ -216,9 +243,7 @@ where
     F: FnOnce(Manifest) -> Fut + Send,
     Fut: Future<Output = bool> + Send,
 {
-    let pcfg = peerly_pairing::Config {
-        rendezvous_url: cfg.rendezvous_url.clone(),
-    };
+    let pcfg = cfg.pairing();
     let _ = events.send(Event::Connecting);
     let paired = peerly_pairing::join(&pcfg, code, cancel.clone())
         .await

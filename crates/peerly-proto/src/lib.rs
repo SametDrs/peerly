@@ -138,6 +138,27 @@ pub mod pairing {
     }
 }
 
+/// Serverless pairing on the local network.
+///
+/// The sender advertises an mDNS service [`lan::SERVICE_TYPE`] whose TXT record
+/// carries `np=<nameplate>` and `v=<PROTOCOL_VERSION>`, and listens on TCP at the
+/// advertised port. The receiver browses for a matching nameplate, connects, and
+/// sends `frame(LanHello)`. After that, both sides exchange `frame(PairingMsg)`
+/// in exactly the same order as over the rendezvous `Relay`.
+pub mod lan {
+    use serde::{Deserialize, Serialize};
+
+    pub const SERVICE_TYPE: &str = "_peerly._tcp.local.";
+    pub const TXT_NAMEPLATE: &str = "np";
+    pub const TXT_VERSION: &str = "v";
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LanHello {
+        pub version: u16,
+        pub nameplate: u32,
+    }
+}
+
 /// File transfer protocol over an established QUIC connection.
 ///
 /// - Control: one bidirectional stream opened by the sender, framed [`Control`] messages.

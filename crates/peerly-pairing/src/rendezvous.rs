@@ -11,6 +11,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::PairingError;
+use crate::mailbox::Mailbox;
 
 /// Timeout for connecting + every request/response exchange with the server.
 pub(crate) const RV_TIMEOUT: Duration = Duration::from_secs(10);
@@ -158,5 +159,37 @@ impl Client {
             let _ = self.ws.close(None).await;
         })
         .await;
+    }
+}
+
+/// [`Mailbox`] over the rendezvous `Relay`, once both peers hold the nameplate.
+pub(crate) struct RendezvousMailbox {
+    client: Client,
+    /// A peer payload that arrived while the sender was waiting for `PeerJoined`.
+    early: Option<Vec<u8>>,
+}
+
+impl RendezvousMailbox {
+    pub(crate) fn new(client: Client, early: Option<Vec<u8>>) -> Self {
+        RendezvousMailbox { client, early }
+    }
+}
+
+impl Mailbox for RendezvousMailbox {
+    async fn send(&mut self, msg: &PairingMsg) -> Result<(), PairingError> {
+        self.client.relay(msg).await
+    }
+
+    async fn recv(&mut self) -> Result<PairingMsg, PairingError> {
+        let payload = match self.early.take() {
+            Some(p) => p,
+            None => self.client.next_peer_payload().await?,
+        };
+        peerly_proto::decode(&payload)
+            .map_err(|e| PairingError::Protocol(format!("bad pairing message: {e}")))
+    }
+
+    async fn close(self) {
+        self.client.close().await;
     }
 }

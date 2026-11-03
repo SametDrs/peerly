@@ -118,7 +118,7 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     let mut cfg = Config::from_env();
     if let Some(u) = cli.rendezvous {
-        cfg.rendezvous_url = u;
+        cfg.rendezvous_url = Some(u);
     }
     let cancel = CancellationToken::new();
     {

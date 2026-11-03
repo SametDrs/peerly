@@ -13,7 +13,8 @@ const T: Duration = Duration::from_secs(40);
 
 async fn cfg() -> Config {
     Config {
-        rendezvous_url: mock_rendezvous::start().await,
+        rendezvous_url: Some(mock_rendezvous::start().await),
+        lan: false,
     }
 }
 
@@ -119,7 +120,8 @@ async fn invalid_code_and_unreachable_server() {
     assert!(matches!(r, Err(PairingError::InvalidCode)));
 
     let dead = Config {
-        rendezvous_url: "ws://127.0.0.1:1".into(),
+        rendezvous_url: Some("ws://127.0.0.1:1".into()),
+        lan: false,
     };
     let r = allocate(&dead).await;
     assert!(
@@ -199,4 +201,77 @@ async fn certificate_pinning() {
     )
     .await;
     assert!(!client_ok, "client accepted an unpinned server certificate");
+}
+
+/// Pairs a sender (`scfg`) with a receiver (`rcfg`) and echoes a message.
+/// Returns (sender route, receiver route).
+async fn echo_pair(scfg: &Config, rcfg: &Config) -> (Route, Route) {
+    let pending = allocate(scfg).await.unwrap();
+    let code = pending.code().to_string();
+    let sender = tokio::spawn(async move {
+        let p = pending
+            .wait_for_peer(CancellationToken::new())
+            .await
+            .unwrap();
+        let (mut send, mut recv) = p.connection.accept_bi().await.unwrap();
+        let data = recv.read_to_end(1 << 20).await.unwrap();
+        send.write_all(&data).await.unwrap();
+        send.finish().unwrap();
+        let _ = p.connection.closed().await;
+        p.route
+    });
+    let p = tokio::time::timeout(T, join(rcfg, &code, CancellationToken::new()))
+        .await
+        .unwrap()
+        .unwrap();
+    let (mut send, mut recv) = p.connection.open_bi().await.unwrap();
+    send.write_all(b"ping").await.unwrap();
+    send.finish().unwrap();
+    let echoed = tokio::time::timeout(T, recv.read_to_end(1 << 20))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(echoed, b"ping");
+    p.connection.close(0u32.into(), b"done");
+    let sender_route = tokio::time::timeout(T, sender).await.unwrap().unwrap();
+    (sender_route, p.route)
+}
+
+/// Sender races rendezvous + LAN; a rendezvous-only receiver still pairs and
+/// the sender's LAN mailbox is dropped.
+#[tokio::test]
+async fn sender_with_lan_pairs_over_rendezvous() {
+    let rcfg = cfg().await;
+    let scfg = Config {
+        lan: true,
+        ..rcfg.clone()
+    };
+    assert_eq!(echo_pair(&scfg, &rcfg).await, (Route::Lan, Route::Lan));
+}
+
+#[tokio::test]
+async fn lan_disabled_without_rendezvous_is_an_error() {
+    let none = Config {
+        rendezvous_url: None,
+        lan: false,
+    };
+    assert!(allocate(&none).await.is_err());
+    let r = join(&none, "42-river-candle", CancellationToken::new()).await;
+    assert!(
+        matches!(r, Err(PairingError::CodeNotFound)),
+        "{:?}",
+        r.err()
+    );
+}
+
+/// Real mDNS discovery, no server at all. Needs multicast on the host
+/// (often unavailable on CI runners): `cargo test -p peerly-pairing -- --ignored`.
+#[tokio::test]
+#[ignore = "needs working multicast (mDNS)"]
+async fn lan_only_mdns_pair_and_echo() {
+    let lan = Config {
+        rendezvous_url: None,
+        lan: true,
+    };
+    assert_eq!(echo_pair(&lan, &lan).await, (Route::Lan, Route::Lan));
 }
