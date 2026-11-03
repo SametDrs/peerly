@@ -10,11 +10,18 @@ fn invalid(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, msg)
 }
 
+use crate::paths::{self, MAX_EMPTY_DIRS, MAX_FILES, MAX_PATH_LEN};
+
 fn utf8_name(p: &Path) -> io::Result<String> {
-    p.file_name()
+    let name = p
+        .file_name()
         .and_then(|n| n.to_str())
         .map(str::to_owned)
-        .ok_or_else(|| invalid(format!("unsupported file name: {}", p.display())))
+        .ok_or_else(|| invalid(format!("unsupported file name: {}", p.display())))?;
+    // Fail up front with the reason: the receiver would refuse these names.
+    paths::validate_rel_path(&name)
+        .map_err(|e| invalid(format!("cannot send {}: {e}", p.display())))?;
+    Ok(name)
 }
 
 struct Builder {
@@ -25,7 +32,15 @@ struct Builder {
 }
 
 impl Builder {
-    fn add_file(&mut self, src: PathBuf, rel: String, size: u64) {
+    fn add_file(&mut self, src: PathBuf, rel: String, size: u64) -> io::Result<()> {
+        if self.files.len() >= MAX_FILES {
+            return Err(invalid(format!("too many files (max {MAX_FILES})")));
+        }
+        if rel.len() > MAX_PATH_LEN {
+            return Err(invalid(format!(
+                "path too long (max {MAX_PATH_LEN} bytes): {rel}"
+            )));
+        }
         self.files.push(FileEntry {
             index: self.files.len() as u32,
             path: rel,
@@ -33,6 +48,7 @@ impl Builder {
         });
         self.sources.push(src);
         self.total += size;
+        Ok(())
     }
 
     /// Recursively add a directory's contents. Symlinks (and Windows junctions,
@@ -55,11 +71,21 @@ impl Builder {
                 added = true;
             } else if ft.is_file() {
                 let size = e.metadata()?.len();
-                self.add_file(path, child, size);
+                self.add_file(path, child, size)?;
                 added = true;
             }
         }
         if !added {
+            if self.empty_dirs.len() >= MAX_EMPTY_DIRS {
+                return Err(invalid(format!(
+                    "too many empty folders (max {MAX_EMPTY_DIRS})"
+                )));
+            }
+            if rel.len() > MAX_PATH_LEN {
+                return Err(invalid(format!(
+                    "path too long (max {MAX_PATH_LEN} bytes): {rel}"
+                )));
+            }
             self.empty_dirs.push(rel.to_owned());
         }
         Ok(())
@@ -93,7 +119,7 @@ pub(crate) fn build(paths: &[PathBuf]) -> io::Result<(Manifest, Vec<PathBuf>)> {
         if meta.is_dir() {
             b.add_dir(p, &name)?;
         } else if meta.is_file() {
-            b.add_file(p.clone(), name.clone(), meta.len());
+            b.add_file(p.clone(), name.clone(), meta.len())?;
         } else {
             continue;
         }
@@ -122,6 +148,21 @@ pub(crate) fn build(paths: &[PathBuf]) -> io::Result<(Manifest, Vec<PathBuf>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refuses_bidi_names() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("video\u{202E}4pm.exe");
+        if std::fs::write(&f, b"x").is_err() {
+            return; // file system cannot store the name
+        }
+        let err = build(std::slice::from_ref(&f)).unwrap_err();
+        assert!(err.to_string().contains("formatting"), "{err}");
+        let root = d.path().join("dir");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("a\u{200B}b"), b"x").unwrap();
+        assert!(build(&[root]).is_err());
+    }
 
     #[test]
     fn builds_nested() {

@@ -220,3 +220,116 @@ async fn udp_probe() {
     assert_eq!(r.nonce, nonce);
     assert_eq!(r.observed, s.local_addr().unwrap());
 }
+
+async fn try_client(a: std::net::SocketAddr, xff: Option<&str>) -> Option<Ws> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut req = format!("ws://{a}").into_client_request().unwrap();
+    if let Some(x) = xff {
+        req.headers_mut()
+            .insert("x-forwarded-for", x.parse().unwrap());
+    }
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.ok()?;
+    let hello = ClientMsg::Hello {
+        version: PROTOCOL_VERSION,
+    };
+    ws.send(Message::Text(serde_json::to_string(&hello).unwrap().into()))
+        .await
+        .ok()?;
+    match tokio::time::timeout(Duration::from_secs(2), ws.next()).await {
+        Ok(Some(Ok(Message::Text(_)))) => Some(ws),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn per_ip_connection_cap() {
+    let a = start(|c| c.max_connections_per_ip = 2).await;
+    let c1 = try_client(a, None).await.expect("first");
+    let _c2 = try_client(a, None).await.expect("second");
+    assert!(try_client(a, None).await.is_none(), "third must be refused");
+    drop(c1);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        try_client(a, None).await.is_some(),
+        "slot freed on disconnect"
+    );
+}
+
+#[tokio::test]
+async fn global_connection_cap() {
+    let a = start(|c| c.max_connections = 2).await;
+    let _c1 = try_client(a, None).await.expect("first");
+    let _c2 = try_client(a, None).await.expect("second");
+    assert!(try_client(a, None).await.is_none());
+}
+
+#[tokio::test]
+async fn hello_timeout_closes_silent_connections() {
+    let a = start(|c| c.hello_timeout = Duration::from_millis(200)).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{a}"))
+        .await
+        .unwrap();
+    let r = tokio::time::timeout(Duration::from_secs(3), ws.next())
+        .await
+        .expect("server should close well before 3 s");
+    assert!(!matches!(r, Some(Ok(Message::Text(_)))));
+}
+
+#[tokio::test]
+async fn trust_proxy_uses_rightmost_forwarded_ip() {
+    let a = start(|c| {
+        c.trust_proxy = true;
+        c.max_connections_per_ip = 1;
+    })
+    .await;
+    // Right-most entry is the key; forged left entries are ignored.
+    let _a1 = try_client(a, Some("9.9.9.9, 1.1.1.1"))
+        .await
+        .expect("1.1.1.1");
+    let _a2 = try_client(a, Some("1.1.1.1, 2.2.2.2"))
+        .await
+        .expect("2.2.2.2");
+    assert!(try_client(a, Some("8.8.8.8, 2.2.2.2")).await.is_none());
+    // Without the header the TCP peer address is the key.
+    let _b = try_client(a, None).await.expect("peer ip");
+    assert!(try_client(a, None).await.is_none());
+}
+
+#[tokio::test]
+async fn forwarded_header_ignored_without_trust_proxy() {
+    let a = start(|c| c.max_connections_per_ip = 1).await;
+    let _c1 = try_client(a, Some("1.1.1.1")).await.expect("first");
+    assert!(try_client(a, Some("2.2.2.2")).await.is_none());
+}
+
+#[tokio::test]
+async fn udp_probe_not_amplifying() {
+    let a = start(|_| {}).await;
+    let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    // Wrong-sized (padded) request: silently dropped.
+    let mut padded = encode(&ProbeRequest {
+        magic: MAGIC,
+        nonce: [1; 16],
+    })
+    .unwrap();
+    padded.extend_from_slice(&[0u8; 200]);
+    s.send_to(&padded, a).await.unwrap();
+    let mut buf = [0u8; 512];
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), s.recv_from(&mut buf))
+            .await
+            .is_err()
+    );
+    // Valid request: the reply stays within a small bound of the request.
+    let req = encode(&ProbeRequest {
+        magic: MAGIC,
+        nonce: [2; 16],
+    })
+    .unwrap();
+    s.send_to(&req, a).await.unwrap();
+    let (n, _) = tokio::time::timeout(Duration::from_secs(5), s.recv_from(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(n <= req.len() + 16, "reply {n} vs request {}", req.len());
+}

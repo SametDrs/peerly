@@ -149,6 +149,9 @@ pub mod lan {
     use serde::{Deserialize, Serialize};
 
     pub const SERVICE_TYPE: &str = "_peerly._tcp.local.";
+    /// Upper bound for any frame on the LAN pairing connection (hello, PAKE,
+    /// sealed PeerInfo). Read with `frame::read_frame_limited`.
+    pub const MAX_PAIRING_FRAME_LEN: usize = 8 * 1024;
     pub const TXT_NAMEPLATE: &str = "np";
     pub const TXT_VERSION: &str = "v";
 
@@ -271,10 +274,20 @@ pub mod frame {
         R: AsyncRead + Unpin,
         T: serde::de::DeserializeOwned,
     {
+        read_frame_limited(r, MAX_FRAME_LEN).await
+    }
+
+    /// Like [`read_frame`] but with a caller-chosen cap, checked before any
+    /// allocation. Use a small cap for unauthenticated input (e.g. LAN pairing).
+    pub async fn read_frame_limited<R, T>(r: &mut R, max_len: usize) -> Result<T, CodecError>
+    where
+        R: AsyncRead + Unpin,
+        T: serde::de::DeserializeOwned,
+    {
         let mut len = [0u8; 4];
         r.read_exact(&mut len).await?;
         let len = u32::from_be_bytes(len) as usize;
-        if len > MAX_FRAME_LEN {
+        if len > max_len.min(MAX_FRAME_LEN) {
             return Err(CodecError::FrameTooLarge(len));
         }
         let mut buf = vec![0u8; len];

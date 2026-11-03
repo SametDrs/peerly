@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
-use peerly_proto::lan::LanHello;
+use peerly_proto::lan::{LanHello, MAX_PAIRING_FRAME_LEN};
 use peerly_proto::pairing::{PairingMsg, PeerInfo};
 use peerly_proto::{CodecError, PROTOCOL_VERSION, frame};
 use tokio::io::AsyncWriteExt;
@@ -30,7 +30,7 @@ pub(crate) const BROWSE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Receiver: TCP connect budget per discovered sender.
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// Sender: time a new connection gets to send its `LanHello`.
-const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 /// Sender: concurrent unauthenticated connections; extra ones are dropped.
 const MAX_PENDING: usize = 8;
 
@@ -58,7 +58,7 @@ pub(crate) struct LanMailbox {
 }
 
 impl LanMailbox {
-    fn new(stream: TcpStream) -> Self {
+    pub(crate) fn new(stream: TcpStream) -> Self {
         let _ = stream.set_nodelay(true);
         LanMailbox { stream }
     }
@@ -72,7 +72,10 @@ impl Mailbox for LanMailbox {
     }
 
     async fn recv(&mut self) -> Result<PairingMsg, PairingError> {
-        frame::read_frame(&mut self.stream).await.map_err(codec_err)
+        // Every LAN frame is unauthenticated input: cap it before allocating.
+        frame::read_frame_limited(&mut self.stream, MAX_PAIRING_FRAME_LEN)
+            .await
+            .map_err(codec_err)
     }
 
     async fn close(mut self) {
@@ -163,11 +166,14 @@ impl LanListener {
         code: &str,
     ) -> Result<(Local, PeerInfo), PairingError> {
         let mut mb = LanMailbox::new(stream);
-        let hello: LanHello =
-            tokio::time::timeout(HELLO_TIMEOUT, frame::read_frame(&mut mb.stream))
-                .await
-                .map_err(|_| PairingError::Timeout)?
-                .map_err(codec_err)?;
+        // Small frame cap: the length prefix is rejected before any allocation.
+        let hello: LanHello = tokio::time::timeout(
+            HELLO_TIMEOUT,
+            frame::read_frame_limited(&mut mb.stream, MAX_PAIRING_FRAME_LEN),
+        )
+        .await
+        .map_err(|_| PairingError::Timeout)?
+        .map_err(codec_err)?;
         if hello.version != PROTOCOL_VERSION || hello.nameplate != self.nameplate {
             return Err(PairingError::Protocol(format!(
                 "LAN hello for v{} nameplate {}",

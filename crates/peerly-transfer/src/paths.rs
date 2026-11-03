@@ -12,6 +12,68 @@ pub(crate) const PART_SUFFIX: &str = ".peerly-part";
 
 const MAX_COMPONENT_LEN: usize = 255;
 
+/// Manifest size caps, checked before any per-entry allocation.
+pub(crate) const MAX_FILES: usize = 100_000;
+pub(crate) const MAX_EMPTY_DIRS: usize = 100_000;
+/// Maximum byte length of one manifest path.
+pub(crate) const MAX_PATH_LEN: usize = 4096;
+
+/// Bidi controls, zero-width and other invisible format (general category Cf)
+/// characters. They enable display spoofing (`video\u{202E}4pm.exe`).
+fn is_format_char(ch: char) -> bool {
+    matches!(ch as u32,
+        0x00AD | 0x0600..=0x0605 | 0x061C | 0x06DD | 0x070F | 0x08E2 | 0x180E
+        | 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x2064 | 0x2066..=0x206F
+        | 0xFEFF | 0xFFF9..=0xFFFB | 0x110BD | 0x110CD | 0x1BCA0..=0x1BCA3
+        | 0x1D173..=0x1D17A | 0xE0001 | 0xE0020..=0xE007F)
+}
+
+/// Validate the display name of a manifest (shown in the UI).
+pub(crate) fn validate_name(name: &str) -> Result<(), TransferError> {
+    let bad = |why: &str| TransferError::UnsafePath(format!("manifest name {name:?}: {why}"));
+    if name.len() > MAX_COMPONENT_LEN {
+        return Err(bad("name too long"));
+    }
+    for ch in name.chars() {
+        if ch.is_control() {
+            return Err(bad("control character"));
+        }
+        if is_format_char(ch) {
+            return Err(bad("bidi or invisible formatting character"));
+        }
+    }
+    Ok(())
+}
+
+/// Reject oversized manifests before allocating anything per entry.
+pub(crate) fn check_limits(m: &Manifest) -> Result<(), TransferError> {
+    if m.files.len() > MAX_FILES {
+        return Err(TransferError::ManifestTooLarge(format!(
+            "{} files (max {MAX_FILES})",
+            m.files.len()
+        )));
+    }
+    if m.empty_dirs.len() > MAX_EMPTY_DIRS {
+        return Err(TransferError::ManifestTooLarge(format!(
+            "{} empty directories (max {MAX_EMPTY_DIRS})",
+            m.empty_dirs.len()
+        )));
+    }
+    let longest = m
+        .files
+        .iter()
+        .map(|f| f.path.len())
+        .chain(m.empty_dirs.iter().map(String::len))
+        .max()
+        .unwrap_or(0);
+    if longest > MAX_PATH_LEN {
+        return Err(TransferError::ManifestTooLarge(format!(
+            "path of {longest} bytes (max {MAX_PATH_LEN})"
+        )));
+    }
+    Ok(())
+}
+
 const RESERVED: &[&str] = &[
     "CON",
     "PRN",
@@ -60,6 +122,9 @@ fn check_component(c: &str) -> Result<(), &'static str> {
         if ch.is_control() {
             return Err("control character");
         }
+        if is_format_char(ch) {
+            return Err("bidi or invisible formatting character");
+        }
         // `:` also covers drive letters (`C:`) and NTFS alternate data streams.
         if matches!(ch, '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*') {
             return Err("forbidden character");
@@ -105,6 +170,8 @@ fn dup_key(p: &str) -> String {
 /// Full structural validation of a manifest received from the peer.
 pub(crate) fn validate_manifest(m: &Manifest) -> Result<(), TransferError> {
     let proto = |s: String| TransferError::Protocol(s);
+    check_limits(m)?;
+    validate_name(&m.name)?;
     let mut seen = HashSet::new();
     let mut dirs = HashSet::new();
     let mut total: u64 = 0;
@@ -327,6 +394,67 @@ mod tests {
         }
         let long = "a".repeat(256);
         assert!(validate_rel_path(&long).is_err());
+    }
+
+    #[test]
+    fn rejects_bidi_and_format_chars() {
+        for ch in [
+            '\u{202E}',
+            '\u{202A}',
+            '\u{2066}',
+            '\u{2069}',
+            '\u{061C}',
+            '\u{200E}',
+            '\u{200F}',
+            '\u{200B}',
+            '\u{200D}',
+            '\u{2060}',
+            '\u{FEFF}',
+            '\u{E0041}',
+        ] {
+            let p = format!("video{ch}4pm.exe");
+            assert!(
+                matches!(validate_rel_path(&p), Err(TransferError::UnsafePath(_))),
+                "{p:?}"
+            );
+            assert!(validate_name(&p).is_err(), "name {p:?}");
+            let m = Manifest {
+                name: p,
+                ..manifest(&["ok"], &[])
+            };
+            assert!(matches!(
+                validate_manifest(&m),
+                Err(TransferError::UnsafePath(_))
+            ));
+        }
+        validate_name("photos").unwrap();
+        validate_name("3 items").unwrap();
+        validate_name("日本語 ñ").unwrap();
+    }
+
+    #[test]
+    fn rejects_oversized_manifests() {
+        let too_big = |m: &Manifest| {
+            matches!(
+                validate_manifest(m),
+                Err(TransferError::ManifestTooLarge(_))
+            )
+        };
+        let mut m = manifest(&[], &[]);
+        m.empty_dirs = vec!["d".into(); MAX_EMPTY_DIRS + 1];
+        assert!(too_big(&m));
+        let mut m = manifest(&[], &[]);
+        m.files = (0..=MAX_FILES as u32)
+            .map(|i| peerly_proto::transfer::FileEntry {
+                index: i,
+                path: String::new(),
+                size: 0,
+            })
+            .collect();
+        assert!(too_big(&m));
+        let long = vec!["a"; MAX_PATH_LEN / 2 + 1].join("/");
+        assert!(too_big(&manifest(&[&long], &[])));
+        assert!(too_big(&manifest(&[], &[&long])));
     }
 
     #[test]

@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { open } from "@tauri-apps/plugin-dialog";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import { getVersion } from "@tauri-apps/api/app";
   import * as api from "./lib/api";
@@ -16,8 +15,10 @@
   let screen = $state<Screen>("pick");
   let role = $state<Role>("send");
 
-  // send
+  // send — `paths` and `dest` mirror the backend-owned selection (display only)
   let paths = $state<string[]>([]);
+  /** Bumped on every selection change so a slow, stale inspection is ignored. */
+  let inspectSeq = 0;
   let info = $state<{ files: number; bytes: number } | null>(null);
   let dragging = $state(false);
   let code = $state("");
@@ -58,8 +59,7 @@
 
   function reset() {
     screen = role === "send" ? "pick" : "enter";
-    paths = [];
-    info = null;
+    clearSelection();
     code = "";
     codeInput = "";
     offer = null;
@@ -135,24 +135,43 @@
     }
   }
 
-  async function addPaths(p: string[]) {
-    paths = [...new Set([...paths, ...p])];
-    screen = "pick";
-    info = await api.inspectPaths(paths);
+  /** Mirrors the backend selection (from a command result or `peerly://selection`). */
+  async function applySelection(s: api.Selection) {
+    dest = s.dest;
+    const changed = s.paths.length !== paths.length || s.paths.some((p, i) => p !== paths[i]);
+    if (!changed) return;
+    paths = s.paths;
+    const seq = ++inspectSeq;
+    if (!paths.length) {
+      info = null;
+      return;
+    }
+    const r = await api.inspectSelection();
+    if (seq === inspectSeq) info = r;
   }
 
+  function clearSelection() {
+    paths = [];
+    info = null;
+    inspectSeq++;
+    api.clearSelection().then(applySelection).catch(() => {});
+  }
+
+  // Native dialogs are opened by the backend; the webview never handles paths itself.
   async function chooseFiles() {
-    const r = await open({ multiple: true, directory: false });
-    if (r) await addPaths(Array.isArray(r) ? r : [r]);
+    await applySelection(await api.pickFiles());
   }
   async function chooseFolder() {
-    const r = await open({ directory: true });
-    if (typeof r === "string") await addPaths([r]);
+    await applySelection(await api.pickFolder());
   }
   async function chooseDest() {
-    const r = await open({ directory: true, defaultPath: dest });
-    if (typeof r === "string") dest = r;
+    await applySelection(await api.pickDestDir());
   }
+
+  // OS drops are added to the selection by the backend, only while this is on.
+  $effect(() => {
+    api.setDropEnabled(role === "send" && screen === "pick" && !preparing).catch(() => {});
+  });
 
   async function startSend() {
     role = "send";
@@ -160,7 +179,7 @@
     preparing = true;
     done = total = speed = 0;
     try {
-      await api.startSend(paths);
+      await api.startSend();
     } catch {
       /* error event already emitted */
     }
@@ -171,7 +190,7 @@
     route = "";
     connecting = true;
     try {
-      await api.startReceive(normalizeCode(codeInput), dest);
+      await api.startReceive(normalizeCode(codeInput));
     } catch {
       /* error event already emitted */
     }
@@ -198,20 +217,19 @@
 
   onMount(() => {
     const unsubs: Array<Promise<() => void>> = [];
-    api.defaultDownloadDir().then((d) => (dest = d));
+    unsubs.push(api.onSelection(applySelection));
+    api.getSelection().then(applySelection).catch(() => {});
     getVersion().then((v) => (version = v)).catch(() => {});
     const tick = setInterval(() => (now = Date.now()), 30000);
     unsubs.push(api.onPeerlyEvent(handleEvent));
     unsubs.push(
+      // Highlight only: the dropped paths are taken by the backend from the OS
+      // event and arrive via `peerly://selection`.
       getCurrentWebview().onDragDropEvent((ev) => {
         const p = ev.payload;
         const accepting = role === "send" && screen === "pick" && !preparing;
         if (p.type === "enter" || p.type === "over") dragging = accepting;
-        else if (p.type === "leave") dragging = false;
-        else if (p.type === "drop") {
-          dragging = false;
-          if (accepting && p.paths.length) addPaths(p.paths);
-        }
+        else dragging = false;
       }),
     );
     return () => {
@@ -248,7 +266,7 @@
           <div class="files">
             <div class="summary">
               <b>{t("selected", { n: t("items", { n: paths.length }) })}{#if info} <span class="muted" style="font-weight: 400">· {t("filesCount", { n: info.files })} · {formatBytes(info.bytes)}</span>{/if}</b>
-              <button class="link small" disabled={preparing} onclick={() => { paths = []; info = null; }}>{t("clear")}</button>
+              <button class="link small" disabled={preparing} onclick={clearSelection}>{t("clear")}</button>
             </div>
             {#each paths.slice(0, 4) as p}
               <div class="item"><Icon name="file" size={16} /><span class="path">{baseName(p)}</span></div>
@@ -371,7 +389,7 @@
         </div>
         <div class="row">
           {#if role === "receive"}
-            <button class="outline" onclick={() => api.openFolder(dest)}><Icon name="folderOpen" />{t("openFolder")}</button>
+            <button class="outline" onclick={() => api.openFolder()}><Icon name="folderOpen" />{t("openFolder")}</button>
           {/if}
           <button class="primary" onclick={reset}>{t(role === "send" ? "sendAnother" : "receiveAnother")}</button>
         </div>

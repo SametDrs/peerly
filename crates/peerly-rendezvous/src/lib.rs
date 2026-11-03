@@ -29,7 +29,17 @@ pub struct ServerConfig {
     /// Max Allocate/Claim requests per IP per minute.
     pub rate_limit_per_min: u32,
     pub idle_timeout: Duration,
+    /// Time allowed for the WebSocket handshake plus the first `Hello`.
+    pub hello_timeout: Duration,
     pub max_nameplates: usize,
+    /// Max concurrent connections across all clients.
+    pub max_connections: usize,
+    /// Max concurrent connections per client IP (see `trust_proxy`).
+    pub max_connections_per_ip: usize,
+    /// Take the client IP from the right-most `X-Forwarded-For` entry. Only
+    /// enable when running behind a reverse proxy that sets this header;
+    /// otherwise clients could spoof their rate-limit key.
+    pub trust_proxy: bool,
 }
 
 impl Default for ServerConfig {
@@ -39,7 +49,11 @@ impl Default for ServerConfig {
             nameplate_ttl: Duration::from_secs(NAMEPLATE_TTL_SECS),
             rate_limit_per_min: 30,
             idle_timeout: Duration::from_secs(15 * 60),
+            hello_timeout: Duration::from_secs(10),
             max_nameplates: 100_000,
+            max_connections: 10_000,
+            max_connections_per_ip: 32,
+            trust_proxy: false,
         }
     }
 }
@@ -63,12 +77,75 @@ struct Inner {
     plates: HashMap<u32, Plate>,
     by_conn: HashMap<u64, u32>,
     rate: HashMap<IpAddr, (Instant, u32)>,
+    conns_total: usize,
+    conns_by_ip: HashMap<IpAddr, usize>,
 }
 
 struct State {
     cfg: ServerConfig,
     inner: Mutex<Inner>,
     next_id: AtomicU64,
+}
+
+/// A reserved connection slot; released on drop.
+struct ConnSlot {
+    state: Arc<State>,
+    ip: Option<IpAddr>,
+}
+
+impl Drop for ConnSlot {
+    fn drop(&mut self) {
+        let mut g = self.state.inner.lock().unwrap();
+        g.conns_total = g.conns_total.saturating_sub(1);
+        if let Some(ip) = self.ip
+            && let Some(c) = g.conns_by_ip.get_mut(&ip)
+        {
+            *c -= 1;
+            if *c == 0 {
+                g.conns_by_ip.remove(&ip);
+            }
+        }
+    }
+}
+
+impl ConnSlot {
+    /// Reserve a global slot, or `None` when the server is full.
+    fn acquire(state: &Arc<State>) -> Option<Self> {
+        let mut g = state.inner.lock().unwrap();
+        if g.conns_total >= state.cfg.max_connections {
+            return None;
+        }
+        g.conns_total += 1;
+        Some(Self {
+            state: state.clone(),
+            ip: None,
+        })
+    }
+
+    /// Count this connection against `ip`; false when that IP is at its cap.
+    fn bind_ip(&mut self, ip: IpAddr) -> bool {
+        let mut g = self.state.inner.lock().unwrap();
+        let c = g.conns_by_ip.entry(ip).or_insert(0);
+        if *c >= self.state.cfg.max_connections_per_ip {
+            if *c == 0 {
+                g.conns_by_ip.remove(&ip);
+            }
+            return false;
+        }
+        *c += 1;
+        self.ip = Some(ip);
+        true
+    }
+}
+
+/// Client IP from the right-most `X-Forwarded-For` entry (the one appended by
+/// our own proxy). `None` when absent or unparsable.
+fn forwarded_ip(headers: &tokio_tungstenite::tungstenite::http::HeaderMap) -> Option<IpAddr> {
+    let v = headers.get("x-forwarded-for")?.to_str().ok()?;
+    let last = v.rsplit(',').next()?.trim();
+    last.parse::<IpAddr>()
+        .ok()
+        .or_else(|| last.parse::<SocketAddr>().ok().map(|a| a.ip()))
 }
 
 fn send(tx: &Tx, m: &ServerMsg) {
@@ -249,17 +326,39 @@ impl State {
     }
 }
 
-async fn handle_conn(state: Arc<State>, stream: TcpStream, peer: SocketAddr) {
+#[allow(clippy::result_large_err)] // handshake callback error type is fixed by tungstenite
+async fn handle_conn(state: Arc<State>, stream: TcpStream, peer: SocketAddr, mut slot: ConnSlot) {
     let wsc = WebSocketConfig::default()
         .max_message_size(Some(MAX_WS_MESSAGE))
         .max_frame_size(Some(MAX_WS_MESSAGE));
-    let ws = match tokio_tungstenite::accept_async_with_config(stream, Some(wsc)).await {
-        Ok(w) => w,
-        Err(e) => {
+    let mut forwarded: Option<IpAddr> = None;
+    let trust_proxy = state.cfg.trust_proxy;
+    let callback =
+        |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+         resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
+            if trust_proxy {
+                forwarded = forwarded_ip(req.headers());
+            }
+            Ok(resp)
+        };
+    let handshake = tokio_tungstenite::accept_hdr_async_with_config(stream, callback, Some(wsc));
+    let ws = match tokio::time::timeout(state.cfg.hello_timeout, handshake).await {
+        Ok(Ok(w)) => w,
+        Ok(Err(e)) => {
             tracing::debug!(%peer, "ws handshake failed: {e}");
             return;
         }
+        Err(_) => {
+            tracing::debug!(%peer, "ws handshake timed out");
+            return;
+        }
     };
+    // Key for rate limits and connection caps.
+    let key_ip = forwarded.unwrap_or_else(|| peer.ip());
+    if !slot.bind_ip(key_ip) {
+        tracing::debug!(%peer, %key_ip, "per-IP connection cap reached");
+        return;
+    }
     let (mut sink, mut stream) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
     let writer = tokio::spawn(async move {
@@ -273,11 +372,12 @@ async fn handle_conn(state: Arc<State>, stream: TcpStream, peer: SocketAddr) {
     });
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
     let mut greeted = false;
+    let hello_deadline = tokio::time::Instant::now() + state.cfg.hello_timeout;
     loop {
         let t = if greeted {
             state.cfg.idle_timeout
         } else {
-            Duration::from_secs(30)
+            hello_deadline.saturating_duration_since(tokio::time::Instant::now())
         };
         let m = match tokio::time::timeout(t, stream.next()).await {
             Ok(Some(Ok(m))) => m,
@@ -315,7 +415,7 @@ async fn handle_conn(state: Arc<State>, stream: TcpStream, peer: SocketAddr) {
                     }
                     continue;
                 }
-                if !state.handle(id, peer.ip(), &tx, msg) {
+                if !state.handle(id, key_ip, &tx, msg) {
                     break;
                 }
             }
@@ -334,28 +434,59 @@ async fn handle_conn(state: Arc<State>, stream: TcpStream, peer: SocketAddr) {
     let _ = tx.send(Message::Close(None));
     drop(tx);
     let _ = tokio::time::timeout(Duration::from_secs(2), writer).await;
+    drop(slot);
 }
+
+/// Probes allowed per source IP per minute.
+const UDP_PROBES_PER_MIN: u32 = 60;
 
 async fn udp_loop(sock: UdpSocket) {
     let mut buf = [0u8; 256];
+    let mut seen: HashMap<IpAddr, (Instant, u32)> = HashMap::new();
     loop {
         let Ok((n, src)) = sock.recv_from(&mut buf).await else {
             continue;
         };
+        // Only exactly-sized `ProbeRequest`s get an answer.
+        if n != PROBE_REQUEST_LEN {
+            continue;
+        }
         let Ok(req) = decode::<ProbeRequest>(&buf[..n]) else {
             continue;
         };
         if req.magic != MAGIC {
             continue;
         }
+        // Spoofed-source reflection guard: cap probes per source IP.
+        let now = Instant::now();
+        if seen.len() > 10_000 {
+            seen.retain(|_, (s, _)| now.duration_since(*s) < Duration::from_secs(60));
+        }
+        let e = seen.entry(src.ip()).or_insert((now, 0));
+        if now.duration_since(e.0) >= Duration::from_secs(60) {
+            *e = (now, 0);
+        }
+        e.1 += 1;
+        if e.1 > UDP_PROBES_PER_MIN {
+            continue;
+        }
         if let Ok(out) = encode(&ProbeResponse {
             nonce: req.nonce,
             observed: src,
         }) {
-            let _ = sock.send_to(&out, src).await;
+            // Never reflect more than a small constant over the request.
+            if out.len() <= n + MAX_PROBE_GROWTH {
+                let _ = sock.send_to(&out, src).await;
+            }
         }
     }
 }
+
+/// Wire size of a `ProbeRequest` (4-byte magic + 16-byte nonce).
+const PROBE_REQUEST_LEN: usize = 20;
+/// A response may exceed its request by at most this many bytes (IPv4 reply
+/// is +3, IPv6 +15), so reflection amplification stays below 2x.
+const MAX_PROBE_GROWTH: usize = 16;
 
 /// A bound server, ready to run.
 pub struct Server {
@@ -419,7 +550,11 @@ impl Server {
                     continue;
                 }
             };
-            tokio::spawn(handle_conn(state.clone(), s, peer));
+            let Some(slot) = ConnSlot::acquire(&state) else {
+                tracing::debug!(%peer, "global connection cap reached");
+                continue; // dropping `s` closes the socket
+            };
+            tokio::spawn(handle_conn(state.clone(), s, peer, slot));
         }
     }
 }

@@ -41,7 +41,7 @@ Read `docs/architecture.md` before changing anything that crosses crate boundari
 - **Security model:** SPAKE2 (password = full code) over a mailbox (LAN TCP or rendezvous relay; DHT planned) → key that seals each peer's `PeerInfo` (cert SHA-256 fingerprint + candidate addresses). QUIC uses self-signed certs pinned to those fingerprints on both sides. The rendezvous server never sees file data or plaintext `PeerInfo`. Nameplates are single-use, so a wrong guess burns the code.
 - **Roles:** sender = QUIC server, receiver = QUIC client. The UDP socket used for the reflexive-address probe is the same one handed to the quinn endpoint (needed for hole punching). Rendezvous UDP probe listens on the same port number as its WebSocket.
 - **Transfer:** sender opens one bi control stream (`Offer` → `Accept`/`Reject` → … → `Done`), then one uni stream per file (several in parallel): header frame + raw bytes + 32-byte BLAKE3 trailer. Receiver writes `*.peerly-part`, verifies, renames. Receivers must re-validate every manifest path (no absolute paths, `..`, drive letters, reserved Windows names).
-- **Desktop events:** `peerly_core::Event` is serde-tagged (`{"kind": ...}`) and emitted on Tauri event `peerly://event`; commands are `start_send`, `start_receive`, `respond_offer`, `cancel`.
+- **Desktop events:** `peerly_core::Event` is serde-tagged (`{"kind": ...}`) and emitted on Tauri event `peerly://event`. The webview never supplies file paths (security review SEC-01): Rust owns the send selection and receive destination (`pick_files`, `pick_folder`, `pick_dest_dir`, OS drag-drop events → `peerly://selection`), and `start_send()` / `start_receive(code)` / `open_folder()` act on that state. The only capability is `core:default`.
 
 ## Team workflow
 

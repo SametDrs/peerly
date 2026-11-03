@@ -175,6 +175,89 @@ async fn lan_ignores_foreign_hello() {
         .unwrap();
 }
 
+/// True if the peer closed `s` (EOF or reset) within `within`.
+async fn dropped_within(s: &mut tokio::net::TcpStream, within: Duration) -> bool {
+    let mut buf = [0u8; 1];
+    matches!(
+        tokio::time::timeout(within, tokio::io::AsyncReadExt::read(s, &mut buf)).await,
+        Ok(Ok(0)) | Ok(Err(_))
+    )
+}
+
+#[tokio::test]
+async fn lan_rejects_oversized_hello_then_pairs() {
+    use peerly_proto::lan::MAX_PAIRING_FRAME_LEN;
+    use tokio::io::AsyncWriteExt;
+
+    let (pending, code, addr) = sender().await;
+    let task = spawn_echo_sender(pending);
+    // Length prefixes just over the pairing cap and at the 16 MiB transfer cap,
+    // then stall. The sender must hang up straight away instead of allocating
+    // the buffer and waiting for the body until the hello timeout.
+    for len in [MAX_PAIRING_FRAME_LEN + 1, peerly_proto::MAX_FRAME_LEN] {
+        let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+        s.write_all(&(len as u32).to_be_bytes()).await.unwrap();
+        assert!(
+            dropped_within(&mut s, lan::HELLO_TIMEOUT / 2).await,
+            "sender kept a connection that announced a {len}-byte frame"
+        );
+    }
+    let route = tokio::time::timeout(T, receive_echo(&code, addr))
+        .await
+        .unwrap();
+    assert_eq!(route, Route::Lan);
+    tokio::time::timeout(T, task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn lan_mailbox_rejects_oversized_frame() {
+    use crate::mailbox::Mailbox;
+    use peerly_proto::lan::MAX_PAIRING_FRAME_LEN;
+    use tokio::io::AsyncWriteExt;
+
+    let l = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let mut peer = tokio::net::TcpStream::connect(l.local_addr().unwrap())
+        .await
+        .unwrap();
+    let (ours, _) = l.accept().await.unwrap();
+    let mut mb = lan::LanMailbox::new(ours);
+    // Only the 4-byte prefix is sent: a capped reader fails before waiting
+    // for (or allocating) the announced body.
+    peer.write_all(&((MAX_PAIRING_FRAME_LEN + 1) as u32).to_be_bytes())
+        .await
+        .unwrap();
+    let r = tokio::time::timeout(Duration::from_secs(2), mb.recv())
+        .await
+        .expect("oversized frame was not rejected up front");
+    assert!(matches!(r, Err(PairingError::Protocol(_))), "{:?}", r.err());
+}
+
+#[tokio::test]
+async fn lan_drops_silent_connection_after_hello_timeout() {
+    let (pending, code, addr) = sender().await;
+    let task = spawn_echo_sender(pending);
+    let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+    assert!(
+        dropped_within(&mut s, lan::HELLO_TIMEOUT + Duration::from_secs(3)).await,
+        "silent connection outlived the hello timeout"
+    );
+    let route = tokio::time::timeout(T, receive_echo(&code, addr))
+        .await
+        .unwrap();
+    assert_eq!(route, Route::Lan);
+    tokio::time::timeout(T, task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
 #[tokio::test]
 async fn cancel_and_drop_tear_down_listener() {
     let (pending, _code, addr) = sender().await;

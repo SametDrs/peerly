@@ -59,6 +59,8 @@ pub enum TransferError {
     HashMismatch(String),
     #[error("unsafe path in manifest: {0}")]
     UnsafePath(String),
+    #[error("manifest too large: {0}")]
+    ManifestTooLarge(String),
     #[error("not enough disk space: need {needed} bytes, have {available}")]
     DiskFull { needed: u64, available: u64 },
     #[error("protocol violation: {0}")]
