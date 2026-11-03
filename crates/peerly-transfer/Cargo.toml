@@ -13,8 +13,10 @@ tokio-util.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 blake3.workspace = true
+fs4 = "1.1.0"
 
 [dev-dependencies]
 anyhow.workspace = true
 rustls.workspace = true
 rcgen.workspace = true
+tempfile = "3.27.0"

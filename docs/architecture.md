@@ -72,6 +72,14 @@ Over the paired connection (`peerly_proto::transfer`):
 4. Receiver writes to `<file>.peerly-part`, hashes while writing, verifies, renames.
 5. Receiver sends `Done`; sender closes the connection.
 
+Contract details:
+- `FileEntry.index` equals the entry's position in `Manifest.files`; anything else is a protocol error.
+- QUIC application close codes: `0` done (also used after `Reject`), `1` cancel, `2` error. The close reason carries a short human-readable message, reported by the peer as `PeerCancelled(reason)`.
+- The control stream has higher priority than data streams. On abort the sender resets its data streams so they don't hold up the `Cancel` frame; the receiver waits up to 1 s after a stream reset for that `Cancel` to arrive.
+- A receiver that declines gets `TransferError::Rejected` from `peerly_transfer::receive`; `peerly-core` treats that as a normal outcome on the receiver side.
+- Senders validate their own manifest with the same path rules and fail early with `UnsafePath`. Duplicate paths are compared case-insensitively on Windows and macOS.
+- Existing files are never overwritten: a colliding top-level item becomes `name (1).ext` / `folder (1)`. Files are not fsynced before rename (small-file speed).
+
 QUIC transport is tuned for throughput (large stream/connection windows, see
 the spike: 64 MiB stream / 128 MiB connection).
 
