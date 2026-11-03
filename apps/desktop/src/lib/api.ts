@@ -12,7 +12,7 @@ export type PeerlyEvent =
   | { kind: "progress"; bytes_done: number; bytes_total: number; bytes_per_sec: number }
   | { kind: "file_completed"; path: string }
   | { kind: "completed"; files: number; bytes: number; elapsed_ms: number }
-  | { kind: "error"; message: string };
+  | { kind: "error"; code: string; message: string };
 
 export const onPeerlyEvent = (cb: (e: PeerlyEvent) => void): Promise<UnlistenFn> =>
   listen<PeerlyEvent>("peerly://event", (e) => cb(e.payload));

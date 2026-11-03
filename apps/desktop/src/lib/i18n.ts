@@ -45,10 +45,20 @@ const en = {
   tryAgain: "Try again",
   details: "Details",
   errWrongCode: "That code did not work. Check it and try again. Each code can only be used once.",
-  errDeclined: "The transfer was declined.",
-  errNoPeer: "Could not reach the other device. Make sure both devices are online.",
-  errGeneric: "The transfer could not be completed.",
   errCancelled: "The transfer was cancelled.",
+  err_wrong_code: "That code did not match. Check it and try again.",
+  err_code_not_found: "This code does not exist or has expired.",
+  err_code_in_use: "This code is already in use. Start again for a new one.",
+  err_invalid_code: "That does not look like a valid code (e.g. 42-river-candle).",
+  err_rendezvous_unreachable: "Could not reach the Peerly server. Check your internet connection.",
+  err_peer_unreachable: "Could not make a direct connection to the other device.",
+  err_peer_left: "The other device disconnected.",
+  err_timeout: "Timed out waiting for the other device.",
+  err_rejected: "The receiver declined the transfer.",
+  err_peer_cancelled: "The other side cancelled the transfer.",
+  err_disk_full: "Not enough free disk space for these files.",
+  err_hash_mismatch: "A file arrived damaged. Please try again.",
+  err_other: "The transfer could not be completed.",
   unknown: "—",
 };
 
@@ -99,12 +109,24 @@ const tr: typeof en = {
   tryAgain: "Tekrar dene",
   details: "Ayrıntılar",
   errWrongCode: "Bu kod çalışmadı. Kontrol edip tekrar deneyin. Her kod yalnızca bir kez kullanılabilir.",
-  errDeclined: "Aktarım reddedildi.",
-  errNoPeer: "Diğer cihaza ulaşılamadı. İki cihazın da çevrimiçi olduğundan emin olun.",
-  errGeneric: "Aktarım tamamlanamadı.",
   errCancelled: "Aktarım iptal edildi.",
+  err_wrong_code: "Kod eşleşmedi. Kontrol edip tekrar deneyin.",
+  err_code_not_found: "Bu kod yok ya da süresi dolmuş.",
+  err_code_in_use: "Bu kod zaten kullanımda. Yeni bir kod için baştan başlayın.",
+  err_invalid_code: "Bu geçerli bir koda benzemiyor (örn. 42-nehir-mum).",
+  err_rendezvous_unreachable: "Peerly sunucusuna ulaşılamadı. İnternet bağlantınızı kontrol edin.",
+  err_peer_unreachable: "Diğer cihazla doğrudan bağlantı kurulamadı.",
+  err_peer_left: "Diğer cihazın bağlantısı koptu.",
+  err_timeout: "Diğer cihaz beklenirken zaman aşımı oldu.",
+  err_rejected: "Alıcı aktarımı reddetti.",
+  err_peer_cancelled: "Karşı taraf aktarımı iptal etti.",
+  err_disk_full: "Bu dosyalar için diskte yeterli boş alan yok.",
+  err_hash_mismatch: "Bir dosya bozuk ulaştı. Lütfen tekrar deneyin.",
+  err_other: "Aktarım tamamlanamadı.",
   unknown: "—",
 };
+
+export const ERR_CODES = ["wrong_code", "code_not_found", "code_in_use", "invalid_code", "rendezvous_unreachable", "peer_unreachable", "peer_left", "timeout", "rejected", "peer_cancelled", "disk_full", "hash_mismatch", "other"];
 
 export type Key = keyof typeof en;
 const lang = (navigator.language || "en").toLowerCase().startsWith("tr") ? "tr" : "en";

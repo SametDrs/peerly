@@ -1,5 +1,3 @@
-mod mock;
-
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -9,8 +7,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-/// Phase 1: use the mock backend. Phase 2: set to `false` to call the real `peerly_core`.
-const USE_MOCK: bool = true;
 const EVENT_NAME: &str = "peerly://event";
 
 /// Shared state: the running task's cancel token and the pending receiver-side offer answer.
@@ -20,8 +16,31 @@ struct AppState {
     offer: Mutex<Option<oneshot::Sender<bool>>>,
 }
 
-fn emit_error(app: &AppHandle, message: &str) {
-    let _ = app.emit(EVENT_NAME, serde_json::json!({ "kind": "error", "message": message }));
+fn emit_error(app: &AppHandle, code: &str, message: &str) {
+    let _ = app.emit(EVENT_NAME, serde_json::json!({ "kind": "error", "code": code, "message": message }));
+}
+
+/// Stable error code for the UI (translated there).
+fn error_code(e: &peerly_core::Error) -> &'static str {
+    use peerly_core::Error as E;
+    use peerly_pairing::PairingError as P;
+    use peerly_transfer::TransferError as T;
+    match e {
+        E::Pairing(P::RendezvousUnreachable(_)) => "rendezvous_unreachable",
+        E::Pairing(P::CodeNotFound) => "code_not_found",
+        E::Pairing(P::CodeInUse) => "code_in_use",
+        E::Pairing(P::WrongCode) => "wrong_code",
+        E::Pairing(P::InvalidCode) => "invalid_code",
+        E::Pairing(P::PeerUnreachable) => "peer_unreachable",
+        E::Pairing(P::PeerLeft) => "peer_left",
+        E::Pairing(P::Timeout) => "timeout",
+        E::Transfer(T::Rejected) => "rejected",
+        E::Transfer(T::PeerCancelled(_)) => "peer_cancelled",
+        E::Transfer(T::DiskFull { .. }) => "disk_full",
+        E::Transfer(T::HashMismatch(_)) => "hash_mismatch",
+        E::Transfer(T::Connection(_)) => "peer_left",
+        _ => "other",
+    }
 }
 
 /// Registers a new task token (cancelling any previous one) and forwards core events to the webview.
@@ -41,11 +60,12 @@ fn begin_task(app: &AppHandle, state: &AppState) -> (mpsc::UnboundedSender<Event
     (tx, cancel)
 }
 
-fn finish(app: &AppHandle, cancel: &CancellationToken, result: Result<(), String>) {
-    if let Err(msg) = result
+fn finish(app: &AppHandle, cancel: &CancellationToken, result: Result<(), peerly_core::Error>) {
+    if let Err(e) = result
+        && !matches!(e, peerly_core::Error::Cancelled)
         && !cancel.is_cancelled()
     {
-        emit_error(app, &msg);
+        emit_error(app, error_code(&e), &e.to_string());
     }
 }
 
@@ -53,19 +73,14 @@ fn finish(app: &AppHandle, cancel: &CancellationToken, result: Result<(), String
 fn start_send(app: AppHandle, state: State<'_, AppState>, paths: Vec<String>) -> Result<(), String> {
     if paths.is_empty() {
         let msg = "No files selected".to_string();
-        emit_error(&app, &msg);
+        emit_error(&app, "other", &msg);
         return Err(msg);
     }
     let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
     let (tx, cancel) = begin_task(&app, &state);
     tauri::async_runtime::spawn(async move {
-        // PHASE 2: only this block changes (the `else` branch is the real call).
-        let result = if USE_MOCK {
-            mock::send(paths, tx, cancel.clone()).await
-        } else {
-            let cfg = peerly_core::Config::from_env();
-            peerly_core::send(&cfg, paths, tx, cancel.clone()).await.map_err(|e| e.to_string())
-        };
+        let cfg = peerly_core::Config::from_env();
+        let result = peerly_core::send(&cfg, paths, tx, cancel.clone()).await;
         finish(&app, &cancel, result);
     });
     Ok(())
@@ -75,24 +90,18 @@ fn start_send(app: AppHandle, state: State<'_, AppState>, paths: Vec<String>) ->
 fn start_receive(app: AppHandle, state: State<'_, AppState>, code: String, dest: String) -> Result<(), String> {
     if code.trim().is_empty() {
         let msg = "Empty code".to_string();
-        emit_error(&app, &msg);
+        emit_error(&app, "invalid_code", &msg);
         return Err(msg);
     }
     let (tx, cancel) = begin_task(&app, &state);
     let (offer_tx, offer_rx) = oneshot::channel::<bool>();
     *state.offer.lock().unwrap() = Some(offer_tx);
     tauri::async_runtime::spawn(async move {
-        // PHASE 2: only this block changes (the `else` branch is the real call).
-        let result = if USE_MOCK {
-            mock::receive(tx, cancel.clone(), offer_rx).await
-        } else {
-            let cfg = peerly_core::Config::from_env();
-            // The core emits `Event::Offer`; we just wait for the user's answer.
-            let decide = |_manifest: peerly_core::Manifest| async move { offer_rx.await.unwrap_or(false) };
-            peerly_core::receive(&cfg, code.trim(), Path::new(&dest), decide, tx, cancel.clone())
-                .await
-                .map_err(|e| e.to_string())
-        };
+        let cfg = peerly_core::Config::from_env();
+        // The core emits `Event::Offer`; we just wait for the user's answer.
+        let decide = |_manifest: peerly_core::Manifest| async move { offer_rx.await.unwrap_or(false) };
+        let result =
+            peerly_core::receive(&cfg, code.trim(), Path::new(&dest), decide, tx, cancel.clone()).await;
         finish(&app, &cancel, result);
     });
     Ok(())

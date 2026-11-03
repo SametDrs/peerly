@@ -4,7 +4,8 @@
   import { openPath } from "@tauri-apps/plugin-opener";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
   import * as api from "./lib/api";
-  import { t, formatBytes, formatDuration } from "./lib/i18n";
+  import { ERR_CODES } from "./lib/i18n";
+  import { t, formatBytes, formatDuration, type Key } from "./lib/i18n";
 
   type Screen = "home" | "pick" | "code" | "enter" | "offer" | "progress" | "done" | "error";
   type Role = "send" | "receive";
@@ -30,6 +31,8 @@
   let currentFile = $state("");
   let summary = $state({ files: 0, bytes: 0, elapsed_ms: 0 });
   let errorMsg = $state("");
+  let errorCode = $state("other");
+  const errKeys: Record<string, true> = Object.fromEntries(ERR_CODES.map((c) => [`err_${c}`, true]));
 
   const pct = $derived(total > 0 ? Math.min(100, (done / total) * 100) : 0);
   const eta = $derived(speed > 0 ? (total - done) / speed : NaN);
@@ -57,13 +60,9 @@
     return s.trim().toLowerCase().replace(/[\s_.,]+/g, "-").replace(/-+/g, "-");
   }
 
-  function friendly(msg: string): string {
-    const m = msg.toLowerCase();
-    if (m.includes("declin") || m.includes("reject")) return t("errDeclined");
-    if (m.includes("cancel")) return t("errCancelled");
-    if (/code|spake|pake|nameplate|mismatch|auth/.test(m)) return t("errWrongCode");
-    if (/connect|reach|timeout|timed out|rendezvous|network|refused/.test(m)) return t("errNoPeer");
-    return t("errGeneric");
+  function friendly(c: string): string {
+    const key = `err_${c}`;
+    return (key in errKeys ? t(key as Key) : t("err_other"));
   }
 
   function handleEvent(e: api.PeerlyEvent) {
@@ -98,6 +97,7 @@
         break;
       case "error":
         errorMsg = e.message;
+        errorCode = e.code;
         screen = "error";
         break;
     }
@@ -272,7 +272,7 @@
     </div>
     <div class="grow"></div>
     <div class="row">
-      <button onclick={() => { api.respondOffer(false); }}>{t("decline")}</button>
+      <button onclick={async () => { await api.respondOffer(false); reset(); }}>{t("decline")}</button>
       <button class="primary" onclick={() => api.respondOffer(true)}>{t("accept")}</button>
     </div>
   {:else if screen === "progress"}
@@ -307,7 +307,7 @@
   {:else if screen === "error"}
     <div class="grow"></div>
     <h2 class="center err">{t("errorTitle")}</h2>
-    <p class="center">{friendly(errorMsg)}</p>
+    <p class="center">{friendly(errorCode)}</p>
     <details>
       <summary>{t("details")}</summary>
       <p style="user-select: text">{errorMsg}</p>
