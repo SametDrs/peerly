@@ -7,22 +7,30 @@ use tokio_util::sync::CancellationToken;
 
 use crate::code::{Code, wordlist};
 use crate::{
-    Config, PairingError, PendingSend, Route, Via, allocate_with, connect_as_receiver, lan,
+    Config, Env, PairingError, PendingSend, Route, Via, allocate_with, connect_as_receiver, lan,
 };
 
 const T: Duration = Duration::from_secs(40);
+
+fn no_mdns() -> Env {
+    Env {
+        mdns: false,
+        ..Env::default()
+    }
+}
 
 fn lan_only() -> Config {
     Config {
         rendezvous_url: None,
         lan: true,
+        dht: false,
     }
 }
 
 async fn sender() -> (PendingSend, Code, SocketAddr) {
-    let pending = allocate_with(&lan_only(), false).await.unwrap();
+    let pending = allocate_with(&lan_only(), &no_mdns()).await.unwrap();
     let code = Code::parse(pending.code()).unwrap();
-    assert!((1..=999).contains(&code.nameplate), "{code}");
+    assert!((1000..=9999).contains(&code.nameplate), "{code}");
     let port = pending.lan_port().expect("LAN listener");
     (pending, code, SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
 }
@@ -192,10 +200,11 @@ async fn unreachable_rendezvous_falls_back_to_lan() {
     let cfg = Config {
         rendezvous_url: Some("ws://127.0.0.1:1".into()),
         lan: true,
+        dht: false,
     };
-    let pending = allocate_with(&cfg, false).await.unwrap();
+    let pending = allocate_with(&cfg, &no_mdns()).await.unwrap();
     let np = Code::parse(pending.code()).unwrap().nameplate;
-    assert!((1..=999).contains(&np));
+    assert!((1000..=9999).contains(&np));
     assert!(pending.lan_port().is_some());
 }
 
@@ -204,8 +213,9 @@ async fn nothing_configured_is_an_error() {
     let cfg = Config {
         rendezvous_url: None,
         lan: false,
+        dht: false,
     };
-    let r = allocate_with(&cfg, false).await;
+    let r = allocate_with(&cfg, &no_mdns()).await;
     assert!(
         matches!(r, Err(PairingError::RendezvousUnreachable(_))),
         "{:?}",

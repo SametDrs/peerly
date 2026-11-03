@@ -26,7 +26,36 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Delay between starting connection attempts to successive candidates.
 const STAGGER: Duration = Duration::from_millis(150);
 const PUNCH_INTERVAL: Duration = Duration::from_millis(250);
-const PUNCH_ROUNDS: u32 = 24;
+/// Default punching time on the sender (rendezvous / LAN pairing, where both
+/// sides learn each other's candidates within milliseconds).
+const PUNCH_TIME: Duration = Duration::from_secs(6);
+
+/// How long the sender (QUIC server) accepts handshakes and punches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AcceptWindow {
+    pub total: Duration,
+    pub punch: Duration,
+}
+
+impl AcceptWindow {
+    /// Both sides finish the exchange at about the same moment.
+    pub(crate) const DIRECT: AcceptWindow = AcceptWindow {
+        total: CONNECT_TIMEOUT,
+        punch: PUNCH_TIME,
+    };
+
+    /// DHT pairing: the sender finishes the exchange first; the receiver may
+    /// only see the sender's sealed info up to one exchange step later
+    /// (its poll is bounded by `skew`). The sender keeps accepting and punching
+    /// until the receiver's full connect window has passed.
+    pub(crate) const fn lagging_receiver(skew: Duration) -> AcceptWindow {
+        let total = Duration::from_secs(CONNECT_TIMEOUT.as_secs() + skew.as_secs());
+        AcceptWindow {
+            total,
+            punch: total,
+        }
+    }
+}
 /// Server name used in the handshake. Ignored by the pinning verifier.
 const SERVER_NAME: &str = "peerly";
 /// Byte the receiver writes on a uni stream to tell the sender which of
@@ -249,9 +278,10 @@ impl Drop for AbortOnDrop {
 
 /// Small datagrams to every candidate so our NAT/firewall lets their packets in.
 /// A single zero byte is not a valid QUIC packet and is silently dropped by quinn.
-async fn punch(sock: std::net::UdpSocket, targets: Vec<SocketAddr>) {
+async fn punch(sock: std::net::UdpSocket, targets: Vec<SocketAddr>, time: Duration) {
     let mut tick = tokio::time::interval(PUNCH_INTERVAL);
-    for _ in 0..PUNCH_ROUNDS {
+    let rounds = (time.as_millis() / PUNCH_INTERVAL.as_millis()).max(1);
+    for _ in 0..rounds {
         tick.tick().await;
         for t in &targets {
             let _ = sock.send_to(&[0u8], t);
@@ -260,7 +290,11 @@ async fn punch(sock: std::net::UdpSocket, targets: Vec<SocketAddr>) {
 }
 
 /// Sender side: QUIC server on the probed socket.
-pub(crate) async fn accept(local: Local, peer: PeerInfo) -> Result<Paired, PairingError> {
+pub(crate) async fn accept(
+    local: Local,
+    peer: PeerInfo,
+    window: AcceptWindow,
+) -> Result<Paired, PairingError> {
     let targets = net::sanitize(peer.candidates);
     let server_cfg = server_config(&local.identity, peer.cert_fingerprint)?;
     let punch_sock = local.socket.try_clone()?;
@@ -270,9 +304,9 @@ pub(crate) async fn accept(local: Local, peer: PeerInfo) -> Result<Paired, Pairi
         local.socket,
         Arc::new(TokioRuntime),
     )?;
-    let _punch = AbortOnDrop(tokio::spawn(punch(punch_sock, targets)));
+    let _punch = AbortOnDrop(tokio::spawn(punch(punch_sock, targets, window.punch)));
 
-    let connection = tokio::time::timeout(CONNECT_TIMEOUT, accept_selected(&endpoint))
+    let connection = tokio::time::timeout(window.total, accept_selected(&endpoint))
         .await
         .ok()
         .flatten()

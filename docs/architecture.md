@@ -72,11 +72,11 @@ Steps 3–4 only need a channel for a handful of opaque messages, called a
 |---|---|---|
 | LAN (mDNS + TCP) | always on unless `PEERLY_NO_LAN=1` | No server. See below. |
 | Rendezvous (WebSocket) | only if `PEERLY_RENDEZVOUS` / `--rendezvous` is set | As described above. |
-| DHT | planned | Internet pairing without our own server (BitTorrent Mainline DHT + public STUN). |
+| DHT | always on unless `PEERLY_NO_DHT=1` | Internet pairing without our own server (BitTorrent Mainline DHT + public STUN). See below. |
 
 **LAN mode** (`peerly_proto::lan`): the sender listens on TCP and advertises the
 mDNS service `_peerly._tcp.local.` with TXT `np=<nameplate>`, `v=<version>`.
-Without a rendezvous server, the sender generates the nameplate itself (1..=999).
+Without a rendezvous server, the sender generates the nameplate itself (1000..=9999).
 The receiver browses for about 2 s, connects to each match, sends
 `frame(LanHello)`, and then the same `PairingMsg` sequence runs over
 length-prefixed frames. Several senders on one LAN can share a nameplate, so the
@@ -85,6 +85,32 @@ up. That is still about 3 guesses in a million. The sender races all of its
 mailboxes and the first completed pairing wins. The listener and the mDNS
 advertisement are torn down as soon as pairing ends, fails or is cancelled.
 The LAN path skips the UDP probe; candidates are LAN addresses only.
+
+**DHT mode** (`peerly_proto::dht`): the mailbox is four BEP 44 mutable items
+on the public BitTorrent Mainline DHT, one per message:
+- `s1`: sender's PAKE message;
+- `r1`: receiver's PAKE message;
+- `s2`, `r2`: each side's sealed `PeerInfo`.
+
+The items are signed with a key derived from the nameplate alone. That key is
+an address, not a secret; the code words never touch the DHT, so observers can't
+test guesses offline. Each item carries the sender's random session id and a
+timestamp, so stale items are ignored. Before showing a code, the sender checks
+`s1`; if it is taken, the sender picks another nameplate. The reflexive address
+comes from public STUN servers, queried on the same UDP socket that becomes the
+QUIC endpoint. Pairing over the DHT takes seconds, not milliseconds: about 15 s
+end to end in testing, and the code itself is ready in about 3 s.
+
+The two sides learn each other's candidates at different moments. To cover
+that, a sender on the DHT path accepts and punches for 45 s: one 30 s poll
+step plus the receiver's 15 s connect window. A receiver that cannot find
+`s1` within 30 s reports `CodeNotFound`. The DHT client binds a random UDP
+port, not 6881. Nameplate keys are public, so anyone can overwrite a slot.
+That makes DoS possible, but it gives no offline guessing material.
+
+Locally generated nameplates are 4 digits (1000..=9999). Senders race every
+enabled mailbox. Receivers run LAN and DHT lookups concurrently, and a LAN match
+is preferred.
 
 **Relay fallback** (symmetric NAT, both sides): not in v1. Pairing reports
 `PeerUnreachable`. The design leaves room for a relay later (TURN-like, still E2E

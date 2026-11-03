@@ -26,31 +26,36 @@ pub struct Config {
     pub rendezvous_url: Option<String>,
     /// Serverless pairing on the local network (mDNS).
     pub lan: bool,
+    /// Serverless pairing over the internet (Mainline DHT + STUN).
+    pub dht: bool,
 }
 
 impl Default for Config {
-    /// LAN pairing only, no server.
+    /// Serverless: LAN + DHT, no rendezvous server.
     fn default() -> Self {
         Self {
             rendezvous_url: None,
             lan: true,
+            dht: true,
         }
     }
 }
 
+fn env_flag(name: &str) -> bool {
+    matches!(std::env::var(name).as_deref().map(str::trim), Ok("1"))
+}
+
 impl Config {
     /// `PEERLY_RENDEZVOUS` set (non-empty) enables the rendezvous server;
-    /// `PEERLY_NO_LAN=1` disables LAN pairing.
+    /// `PEERLY_NO_LAN=1` disables LAN pairing, `PEERLY_NO_DHT=1` DHT pairing.
     pub fn from_env() -> Self {
         Self {
             rendezvous_url: std::env::var("PEERLY_RENDEZVOUS")
                 .ok()
                 .map(|u| u.trim().to_string())
                 .filter(|u| !u.is_empty()),
-            lan: !matches!(
-                std::env::var("PEERLY_NO_LAN").as_deref().map(str::trim),
-                Ok("1")
-            ),
+            lan: !env_flag("PEERLY_NO_LAN"),
+            dht: !env_flag("PEERLY_NO_DHT"),
         }
     }
 
@@ -58,6 +63,7 @@ impl Config {
         peerly_pairing::Config {
             rendezvous_url: self.rendezvous_url.clone(),
             lan: self.lan,
+            dht: self.dht,
         }
     }
 }

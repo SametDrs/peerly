@@ -2,9 +2,11 @@
 //! direct QUIC connection between two peers.
 //!
 //! Steps (see `docs/architecture.md`):
-//! 1. Sender gets a nameplate (rendezvous server, or locally for LAN-only), generates the code,
-//!    and opens its mailboxes: rendezvous relay and/or a LAN listener advertised over mDNS.
-//! 2. Receiver finds the sender: mDNS on the LAN first, then claims the nameplate on the rendezvous.
+//! 1. Sender gets a nameplate (rendezvous server, or a local random 4-digit one
+//!    checked for collisions on the DHT), generates the code and opens its
+//!    mailboxes: rendezvous relay, LAN listener advertised over mDNS, DHT slots.
+//! 2. Receiver looks for the sender on the LAN (mDNS) and the DHT at the same
+//!    time, and claims the nameplate on the rendezvous if configured.
 //! 3. SPAKE2 over that mailbox (see `mailbox.rs`), password = full code -> shared key.
 //! 4. Each side seals its `PeerInfo` (cert fingerprint + candidate addresses) with that key.
 //! 5. Hole punching + QUIC handshake with mutual certificate pinning.
@@ -13,19 +15,24 @@
 //! `peerly-core`; change them only together with `docs/architecture.md`.
 
 use std::net::SocketAddr;
+use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use peerly_proto::pairing::{PairingMsg, PeerInfo};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
 use tokio_util::sync::CancellationToken;
 
+use dht::{DhtMailbox, DhtNode};
 use lan::LanListener;
 use mailbox::Mailbox;
-use net::Local;
+use net::{Discovery, Local};
+use quic::AcceptWindow;
 use rendezvous::RendezvousMailbox;
 use seal::{Keys, Role};
 
 pub mod code;
+mod dht;
 mod lan;
 mod mailbox;
 mod mdns;
@@ -33,7 +40,10 @@ mod net;
 pub mod quic;
 mod rendezvous;
 mod seal;
+mod stun;
 
+#[cfg(test)]
+mod dht_tests;
 #[cfg(test)]
 mod lan_tests;
 
@@ -47,6 +57,19 @@ pub struct Config {
     pub rendezvous_url: Option<String>,
     /// Serverless pairing on the local network (mDNS + TCP).
     pub lan: bool,
+    /// Serverless pairing over the internet (Mainline DHT + STUN).
+    pub dht: bool,
+}
+
+impl Default for Config {
+    /// Serverless: LAN + DHT, no rendezvous server.
+    fn default() -> Self {
+        Config {
+            rendezvous_url: None,
+            lan: true,
+            dht: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,14 +115,64 @@ pub enum PairingError {
     Io(#[from] std::io::Error),
 }
 
+/// Internal knobs that tests override (production uses [`Env::default`]).
+#[derive(Clone)]
+pub(crate) struct Env {
+    /// Advertise / browse via mDNS (off: LAN tests connect to the listener directly).
+    mdns: bool,
+    /// DHT bootstrap nodes; `None` = public Mainline DHT.
+    dht_bootstrap: Option<Vec<String>>,
+    /// STUN servers for the DHT path.
+    stun: Vec<String>,
+    /// Counts DHT lookups (tests check that polling stops).
+    dht_gets: Arc<AtomicUsize>,
+    /// Local nameplates to use first, in order (tests force collisions).
+    nameplates: Arc<Mutex<Vec<u32>>>,
+}
+
+impl Default for Env {
+    fn default() -> Self {
+        Env {
+            mdns: true,
+            dht_bootstrap: None,
+            stun: stun::DEFAULT_SERVERS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            dht_gets: Arc::default(),
+            nameplates: Arc::default(),
+        }
+    }
+}
+
+impl Env {
+    /// Locally generated nameplate (1000..=9999) for serverless pairing.
+    fn next_nameplate(&self) -> u32 {
+        if let Ok(mut forced) = self.nameplates.lock()
+            && !forced.is_empty()
+        {
+            return forced.remove(0);
+        }
+        let mut b = [0u8; 4];
+        getrandom::fill(&mut b).expect("OS random number generator unavailable");
+        u32::from_le_bytes(b) % 9000 + 1000
+    }
+
+    fn dht_node(&self) -> Result<DhtNode, PairingError> {
+        DhtNode::start(self.dht_bootstrap.as_deref(), self.dht_gets.clone())
+    }
+}
+
 /// Sender side, step 1: allocate a nameplate and generate the code to show.
 ///
-/// Holds the open mailboxes (rendezvous connection and/or LAN listener +
-/// mDNS advertisement). Dropping it tears all of them down.
+/// Holds the open mailboxes (rendezvous connection, LAN listener + mDNS
+/// advertisement, DHT session). Dropping it tears all of them down.
 pub struct PendingSend {
     code: String,
     rendezvous: Option<(rendezvous::Client, String)>,
     lan: Option<LanListener>,
+    dht: Option<DhtMailbox>,
+    stun: Vec<String>,
 }
 
 impl std::fmt::Debug for PendingSend {
@@ -107,6 +180,7 @@ impl std::fmt::Debug for PendingSend {
         f.debug_struct("PendingSend")
             .field("rendezvous_url", &self.rendezvous.as_ref().map(|(_, u)| u))
             .field("lan", &self.lan.is_some())
+            .field("dht", &self.dht.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -116,27 +190,36 @@ impl std::fmt::Debug for PendingSend {
 enum Via {
     Rendezvous,
     Lan,
+    Dht,
 }
 
 impl PendingSend {
-    /// The code to display, e.g. `42-river-candle`.
+    /// The code to display, e.g. `4217-river-candle`.
     pub fn code(&self) -> &str {
         &self.code
     }
 
     /// Wait for a receiver to join with the code and finish pairing.
     /// All mailboxes are raced; the first completed exchange wins and the
-    /// others (including the LAN listener and mDNS advertisement) are dropped.
-    /// Waiting for the receiver has no timeout (only `cancel` and the server's nameplate TTL).
+    /// others (LAN listener, mDNS advertisement, DHT polling, rendezvous
+    /// connection) are dropped. Waiting for the receiver has no timeout (only
+    /// `cancel` and the server's nameplate TTL).
     pub async fn wait_for_peer(self, cancel: CancellationToken) -> Result<Paired, PairingError> {
         cancellable(&cancel, async move {
             let PendingSend {
                 code,
                 rendezvous,
                 lan,
+                dht,
+                stun,
             } = self;
-            let (local, peer, via) = sender_exchange(&code, rendezvous, lan).await?;
-            let paired = quic::accept(local, peer).await?;
+            let (local, peer, via) = sender_exchange(&code, rendezvous, lan, dht, &stun).await?;
+            let window = match via {
+                // The receiver reads our sealed info up to one poll step later.
+                Via::Dht => AcceptWindow::lagging_receiver(EXCHANGE_TIMEOUT),
+                Via::Lan | Via::Rendezvous => AcceptWindow::DIRECT,
+            };
+            let paired = quic::accept(local, peer, window).await?;
             Ok(with_route(paired, via))
         })
         .await
@@ -145,6 +228,11 @@ impl PendingSend {
     #[cfg(test)]
     pub(crate) fn lan_port(&self) -> Option<u16> {
         self.lan.as_ref().map(LanListener::port)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_dht(&self) -> bool {
+        self.dht.is_some()
     }
 }
 
@@ -161,16 +249,19 @@ async fn sender_exchange(
     code: &str,
     rendezvous: Option<(rendezvous::Client, String)>,
     lan: Option<LanListener>,
+    dht: Option<DhtMailbox>,
+    stun: &[String],
 ) -> Result<(Local, PeerInfo, Via), PairingError> {
     let mut rv_done = rendezvous.is_none();
     let mut lan_done = lan.is_none();
+    let mut dht_done = dht.is_none();
     let rv_fut = async move {
         let Some((mut client, url)) = rendezvous else {
             return Err(PairingError::RendezvousUnreachable("not configured".into()));
         };
         let early = client.wait_peer_joined().await?;
         let mut mb = RendezvousMailbox::new(client, early);
-        let r = exchange(&mut mb, code, Role::Sender, Some(&url)).await;
+        let r = exchange(&mut mb, code, Role::Sender, Discovery::Rendezvous(&url)).await;
         mb.close().await;
         r
     };
@@ -180,23 +271,30 @@ async fn sender_exchange(
             None => Err(PairingError::CodeNotFound),
         }
     };
-    tokio::pin!(rv_fut, lan_fut);
+    let dht_fut = async move {
+        let Some(mut mb) = dht else {
+            return Err(PairingError::CodeNotFound);
+        };
+        exchange(&mut mb, code, Role::Sender, Discovery::Stun(stun)).await
+    };
+    tokio::pin!(rv_fut, lan_fut, dht_fut);
     let mut last_err = None;
-    while !(rv_done && lan_done) {
+    while !(rv_done && lan_done && dht_done) {
         let (via, r) = tokio::select! {
             r = &mut rv_fut, if !rv_done => { rv_done = true; (Via::Rendezvous, r) }
             r = &mut lan_fut, if !lan_done => { lan_done = true; (Via::Lan, r) }
+            r = &mut dht_fut, if !dht_done => { dht_done = true; (Via::Dht, r) }
         };
         match r {
             Ok((local, peer)) => return Ok((local, peer, via)),
-            // A wrong code ends pairing everywhere (single use on the rendezvous,
-            // too many guesses on the LAN).
+            // A wrong code ends pairing everywhere (single use on the rendezvous
+            // and the DHT, too many guesses on the LAN).
             Err(PairingError::WrongCode) => return Err(PairingError::WrongCode),
             Err(e) => {
-                if !(rv_done && lan_done) {
+                if !(rv_done && lan_done && dht_done) {
                     tracing::warn!(
                         ?via,
-                        "pairing channel failed, still waiting on the other: {e}"
+                        "pairing channel failed, still waiting on the others: {e}"
                     );
                 }
                 last_err = Some(e);
@@ -206,57 +304,83 @@ async fn sender_exchange(
     Err(last_err.unwrap_or(PairingError::PeerLeft))
 }
 
-/// Locally generated nameplate (1..=999) for serverless pairing.
-fn local_nameplate() -> u32 {
-    let mut b = [0u8; 4];
-    getrandom::fill(&mut b).expect("OS random number generator unavailable");
-    u32::from_le_bytes(b) % 999 + 1
-}
-
 /// Sender: opens every configured mailbox and generates the code.
 ///
 /// The nameplate comes from the rendezvous server when it is configured and
-/// reachable; otherwise (with `lan`) it is generated locally.
+/// reachable; otherwise (with `lan` or `dht`) it is generated locally and,
+/// with `dht`, re-picked while another sender's fresh session occupies it.
 pub async fn allocate(cfg: &Config) -> Result<PendingSend, PairingError> {
-    allocate_with(cfg, true).await
+    allocate_with(cfg, &Env::default()).await
 }
 
-/// `advertise = false` skips mDNS (tests connect to the listener directly).
-async fn allocate_with(cfg: &Config, advertise: bool) -> Result<PendingSend, PairingError> {
+async fn allocate_with(cfg: &Config, env: &Env) -> Result<PendingSend, PairingError> {
+    let serverless = cfg.lan || cfg.dht;
     let mut rendezvous = None;
-    let nameplate = match &cfg.rendezvous_url {
-        Some(url) => {
-            let r = async {
-                let mut c = rendezvous::Client::connect(url).await?;
-                let np = c.allocate().await?;
-                Ok::<_, PairingError>((c, np))
-            }
-            .await;
-            match r {
-                Ok((c, np)) => {
-                    rendezvous = Some((c, url.clone()));
-                    np
-                }
-                Err(e) if cfg.lan => {
-                    tracing::warn!(
-                        "rendezvous unavailable, pairing on the local network only: {e}"
-                    );
-                    local_nameplate()
-                }
-                Err(e) => return Err(e),
-            }
+    let mut assigned = None;
+    if let Some(url) = &cfg.rendezvous_url {
+        let r = async {
+            let mut c = rendezvous::Client::connect(url).await?;
+            let np = c.allocate().await?;
+            Ok::<_, PairingError>((c, np))
         }
-        None if cfg.lan => local_nameplate(),
+        .await;
+        match r {
+            Ok((c, np)) => {
+                rendezvous = Some((c, url.clone()));
+                assigned = Some(np);
+            }
+            Err(e) if serverless => {
+                tracing::warn!("rendezvous unavailable, pairing without a server: {e}");
+            }
+            Err(e) => return Err(e),
+        }
+    } else if !serverless {
+        return Err(PairingError::RendezvousUnreachable(
+            "no rendezvous server configured and serverless pairing is disabled".into(),
+        ));
+    }
+
+    let mut dht_node = None;
+    if cfg.dht {
+        match env.dht_node() {
+            Ok(n) => dht_node = Some(n),
+            Err(e) => tracing::warn!("DHT pairing unavailable: {e}"),
+        }
+    }
+    let nameplate = match assigned {
+        Some(np) => {
+            if let Some(node) = &dht_node
+                && node.nameplate_taken(np).await
+            {
+                tracing::warn!(%np, "DHT: nameplate busy, pairing without the DHT");
+                dht_node = None;
+            }
+            np
+        }
         None => {
-            return Err(PairingError::RendezvousUnreachable(
-                "no rendezvous server configured and LAN pairing is disabled".into(),
-            ));
+            let mut np = env.next_nameplate();
+            if let Some(node) = &dht_node {
+                let mut tries = 1;
+                while node.nameplate_taken(np).await {
+                    if tries >= dht::MAX_NAMEPLATE_TRIES {
+                        tracing::warn!("DHT: no free nameplate found, pairing without the DHT");
+                        dht_node = None;
+                        break;
+                    }
+                    tracing::debug!(%np, "DHT: nameplate busy, picking another");
+                    np = env.next_nameplate();
+                    tries += 1;
+                }
+            }
+            np
         }
     };
+    let dht = dht_node.map(|node| DhtMailbox::offer(node, nameplate));
+
     let lan = if cfg.lan {
-        match LanListener::bind(nameplate, advertise).await {
+        match LanListener::bind(nameplate, env.mdns).await {
             Ok(l) => Some(l),
-            Err(e) if rendezvous.is_some() => {
+            Err(e) if rendezvous.is_some() || dht.is_some() => {
                 tracing::warn!("LAN pairing unavailable: {e}");
                 None
             }
@@ -265,54 +389,141 @@ async fn allocate_with(cfg: &Config, advertise: bool) -> Result<PendingSend, Pai
     } else {
         None
     };
+    if rendezvous.is_none() && lan.is_none() && dht.is_none() {
+        // Only reachable when the DHT was the sole channel and had no free nameplate.
+        return Err(if cfg.dht {
+            PairingError::CodeInUse
+        } else {
+            PairingError::RendezvousUnreachable("no pairing channel available".into())
+        });
+    }
     Ok(PendingSend {
         code: code::Code::generate(nameplate).to_string(),
         rendezvous,
         lan,
+        dht,
+        stun: env.stun.clone(),
     })
 }
 
 /// Receiver side: join with the code typed by the user.
 ///
-/// With `lan`, first browses the local network (~2 s) and tries every sender
-/// advertising the nameplate; then falls back to the rendezvous server if configured.
+/// LAN (mDNS, ~2 s) and DHT lookups run concurrently; the rendezvous server,
+/// if configured, is tried once the LAN browse found nothing. Preference when
+/// several succeed: LAN, then rendezvous, then DHT.
 pub async fn join(
     cfg: &Config,
     code: &str,
     cancel: CancellationToken,
 ) -> Result<Paired, PairingError> {
+    join_with(cfg, code, cancel, &Env::default()).await
+}
+
+/// Ranks errors by how useful they are to the user.
+fn error_rank(e: &PairingError) -> u8 {
+    match e {
+        PairingError::WrongCode => 3,
+        PairingError::CodeNotFound => 1,
+        _ => 2,
+    }
+}
+
+async fn join_with(
+    cfg: &Config,
+    code: &str,
+    cancel: CancellationToken,
+    env: &Env,
+) -> Result<Paired, PairingError> {
     let code = code::Code::parse(code).ok_or(PairingError::InvalidCode)?;
+    let password = code.to_string();
     cancellable(&cancel, async {
-        let mut lan_err = None;
-        if cfg.lan {
-            match lan::discover_and_exchange(&code).await {
-                Ok((local, peer)) => return connect_as_receiver(local, peer, Via::Lan).await,
-                Err(PairingError::CodeNotFound) => {}
-                Err(e) => lan_err = Some(e),
-            }
+        // The rendezvous claim waits for the LAN browse: claiming burns a
+        // rendezvous nameplate, and a LAN sender would pair twice otherwise.
+        let (lan_gate_tx, lan_gate_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut lan_gate = Some(lan_gate_tx);
+        if !cfg.lan {
+            lan_gate = None;
         }
-        let Some(url) = &cfg.rendezvous_url else {
-            return Err(lan_err.unwrap_or(PairingError::CodeNotFound));
-        };
-        match join_rendezvous(url, &code).await {
-            // The LAN failure (e.g. a wrong code) says more than "not found".
-            Err(PairingError::CodeNotFound) if lan_err.is_some() => {
-                Err(lan_err.unwrap_or(PairingError::CodeNotFound))
+        let lan_fut = async {
+            if cfg.lan && env.mdns {
+                lan::discover_and_exchange(&code).await
+            } else {
+                Err(PairingError::CodeNotFound)
             }
-            r => r,
+        };
+        let rv_fut = async {
+            let _ = lan_gate_rx.await;
+            match &cfg.rendezvous_url {
+                Some(url) => rendezvous_exchange(url, &code).await,
+                None => Err(PairingError::CodeNotFound),
+            }
+        };
+        let dht_fut = async {
+            let node = env.dht_node()?;
+            let mut mb = DhtMailbox::join(node, code.nameplate).await?;
+            exchange(
+                &mut mb,
+                &password,
+                Role::Receiver,
+                Discovery::Stun(&env.stun),
+            )
+            .await
+        };
+        tokio::pin!(lan_fut, rv_fut, dht_fut);
+        let mut lan_done = !cfg.lan;
+        let mut rv_done = cfg.rendezvous_url.is_none();
+        let mut dht_done = !cfg.dht;
+        let mut held_dht = None;
+        let mut err = PairingError::CodeNotFound;
+        loop {
+            if lan_done && rv_done {
+                if let Some((local, peer)) = held_dht.take() {
+                    return connect_as_receiver(local, peer, Via::Dht).await;
+                }
+                if dht_done {
+                    return Err(err);
+                }
+            }
+            let (via, r) = tokio::select! {
+                r = &mut lan_fut, if !lan_done => {
+                    lan_done = true;
+                    drop(lan_gate.take());
+                    (Via::Lan, r)
+                }
+                r = &mut rv_fut, if !rv_done => { rv_done = true; (Via::Rendezvous, r) }
+                r = &mut dht_fut, if !dht_done => { dht_done = true; (Via::Dht, r) }
+            };
+            match r {
+                Ok((local, peer)) if via == Via::Dht => held_dht = Some((local, peer)),
+                Ok((local, peer)) => return connect_as_receiver(local, peer, via).await,
+                Err(e) => {
+                    tracing::debug!(?via, "receiver pairing channel failed: {e}");
+                    if error_rank(&e) > error_rank(&err) {
+                        err = e;
+                    }
+                }
+            }
         }
     })
     .await
 }
 
-async fn join_rendezvous(url: &str, code: &code::Code) -> Result<Paired, PairingError> {
+async fn rendezvous_exchange(
+    url: &str,
+    code: &code::Code,
+) -> Result<(Local, PeerInfo), PairingError> {
     let mut client = rendezvous::Client::connect(url).await?;
     client.claim(code.nameplate).await?;
     let mut mb = RendezvousMailbox::new(client, None);
-    let r = exchange(&mut mb, &code.to_string(), Role::Receiver, Some(url)).await;
+    let r = exchange(
+        &mut mb,
+        &code.to_string(),
+        Role::Receiver,
+        Discovery::Rendezvous(url),
+    )
+    .await;
     mb.close().await;
-    let (local, peer) = r?;
-    connect_as_receiver(local, peer, Via::Rendezvous).await
+    r
 }
 
 async fn connect_as_receiver(
@@ -327,7 +538,7 @@ async fn connect_as_receiver(
 /// SPAKE2 identity (both sides, symmetric mode).
 const PAKE_IDENTITY: &[u8] = b"peerly/1";
 /// Upper bound for each peer-to-peer exchange step over a mailbox.
-const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
 async fn cancellable<T>(
     cancel: &CancellationToken,
@@ -346,14 +557,23 @@ async fn next_msg<M: Mailbox>(mb: &mut M) -> Result<PairingMsg, PairingError> {
         .map_err(|_| PairingError::Timeout)?
 }
 
+fn expect_pake(msg: PairingMsg) -> Result<Vec<u8>, PairingError> {
+    match msg {
+        PairingMsg::Pake(m) => Ok(m),
+        other => Err(PairingError::Protocol(format!(
+            "expected PAKE message, got {other:?}"
+        ))),
+    }
+}
+
 /// Steps 3-4 over any mailbox: SPAKE2, then the sealed `PeerInfo` exchange.
-/// `probe_url` = rendezvous server to probe for a reflexive address (none on the LAN).
+/// `discovery` = how to learn our reflexive address on the QUIC socket.
 /// The caller closes the mailbox and runs QUIC by role.
 pub(crate) async fn exchange<M: Mailbox>(
     mb: &mut M,
     password: &str,
     role: Role,
-    probe_url: Option<&str>,
+    discovery: Discovery<'_>,
 ) -> Result<(Local, PeerInfo), PairingError> {
     let (pake, outbound) = Spake2::<Ed25519Group>::start_symmetric(
         &Password::new(password.as_bytes()),
@@ -361,16 +581,18 @@ pub(crate) async fn exchange<M: Mailbox>(
     );
     mb.send(&PairingMsg::Pake(outbound)).await?;
 
-    // Probe + cert generation run while we wait for the peer's PAKE message.
-    let (local, peer_pake) = tokio::join!(net::prepare(probe_url), async {
-        match next_msg(mb).await? {
-            PairingMsg::Pake(m) => Ok(m),
-            other => Err(PairingError::Protocol(format!(
-                "expected PAKE message, got {other:?}"
-            ))),
-        }
-    });
-    let (local, peer_pake) = (local?, peer_pake?);
+    let (local, peer_pake) = if mb.waits_for_peer() {
+        // Unbounded wait for the peer; prepare afterwards so the NAT mapping
+        // learned via STUN is fresh when QUIC starts.
+        let peer_pake = expect_pake(mb.recv().await?)?;
+        (net::prepare(discovery).await?, peer_pake)
+    } else {
+        // Probe + cert generation run while we wait for the peer's PAKE message.
+        let (local, peer_pake) = tokio::join!(net::prepare(discovery), async {
+            expect_pake(next_msg(mb).await?)
+        });
+        (local?, peer_pake?)
+    };
     let shared = pake
         .finish(&peer_pake)
         .map_err(|e| PairingError::Protocol(format!("PAKE failed: {e:?}")))?;

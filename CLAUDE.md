@@ -26,7 +26,7 @@ cargo run -p peerly-cli -- send <paths...>    # binary name: peerly
 cargo run -p peerly-cli -- receive <code> --to <dir>
 ```
 
-Pairing works with no server on the LAN (mDNS + TCP mailbox). `PEERLY_RENDEZVOUS` (or `--rendezvous`) additionally enables a rendezvous server; it is unset by default. `PEERLY_NO_LAN=1` disables LAN mode. Real-mDNS tests are `#[ignore]` (CI lacks multicast): `cargo test -p peerly-pairing -- --ignored`.
+Pairing needs no server: LAN (mDNS + TCP mailbox) and internet (BitTorrent Mainline DHT mailbox + public STUN) are on by default. `PEERLY_RENDEZVOUS` (or `--rendezvous`) additionally enables a rendezvous server. `PEERLY_NO_LAN=1` / `PEERLY_NO_DHT=1` disable those mailboxes. Offline DHT tests use mainline's local testnet (~15 s). Tests touching real mDNS / public DHT / STUN are `#[ignore]`: `cargo test -p peerly-pairing -- --ignored`.
 Desktop app: `cd apps/desktop; npm install; npm run tauri dev`.
 
 `spike-quic/` is a throwaway Stage 0 speed test, excluded from the workspace (build it from inside its own folder).

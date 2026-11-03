@@ -14,10 +14,11 @@ async fn start_server() -> Config {
     let server = Server::bind(cfg).await.unwrap();
     let addr = server.local_addr();
     tokio::spawn(server.run());
-    // LAN off: keeps these tests deterministic (no mDNS on the test host).
+    // LAN and DHT off: keeps these tests deterministic (no mDNS, no internet).
     Config {
         rendezvous_url: Some(format!("ws://{addr}")),
         lan: false,
+        dht: false,
     }
 }
 
@@ -70,6 +71,7 @@ async fn roundtrip_folder_lan_only() {
     roundtrip(Config {
         rendezvous_url: None,
         lan: true,
+        dht: false,
     })
     .await;
 }

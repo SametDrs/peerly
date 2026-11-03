@@ -1,4 +1,5 @@
-//! Local address discovery: UDP socket, reflexive-address probe, LAN candidates.
+//! Local address discovery: UDP socket, reflexive address (rendezvous probe or
+//! STUN), LAN candidates.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
@@ -23,22 +24,43 @@ pub(crate) struct Local {
     pub identity: Identity,
 }
 
-/// Binds the QUIC socket and collects candidates. With `probe_url` (rendezvous
-/// pairing) the reflexive address is probed; without it (LAN pairing) only
-/// local interface addresses are used.
-pub(crate) async fn prepare(probe_url: Option<&str>) -> Result<Local, PairingError> {
+/// How a side learns its public (reflexive) address, on the QUIC socket itself.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Discovery<'a> {
+    /// LAN pairing: local interface addresses only.
+    LanOnly,
+    /// Rendezvous UDP probe on the server's WebSocket host and port.
+    Rendezvous(&'a str),
+    /// Public STUN servers (DHT pairing).
+    Stun(&'a [String]),
+}
+
+/// Binds the QUIC socket and collects candidates: LAN addresses plus the
+/// reflexive address found via `discovery` (if any).
+pub(crate) async fn prepare(discovery: Discovery<'_>) -> Result<Local, PairingError> {
     let std_sock = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
     std_sock.set_nonblocking(true)?;
     let sock = UdpSocket::from_std(std_sock)?;
-    let mut reflexive = None;
-    if let Some(url) = probe_url {
-        if let Some(server) = probe_target(url).await {
-            reflexive = probe(&sock, server).await;
+    let reflexive = match discovery {
+        Discovery::LanOnly => None,
+        Discovery::Rendezvous(url) => {
+            let r = match probe_target(url).await {
+                Some(server) => probe(&sock, server).await,
+                None => None,
+            };
+            if r.is_none() {
+                tracing::warn!("no UDP probe answer from rendezvous; using LAN candidates only");
+            }
+            r
         }
-        if reflexive.is_none() {
-            tracing::warn!("no UDP probe answer from rendezvous; using LAN candidates only");
+        Discovery::Stun(servers) => {
+            let r = crate::stun::reflexive(&sock, servers).await.map(normalize);
+            if r.is_none() && !servers.is_empty() {
+                tracing::warn!("no STUN answer; using LAN candidates only");
+            }
+            r
         }
-    }
+    };
     let socket = sock.into_std()?;
     let port = socket.local_addr()?.port();
     let mut candidates = lan_addrs(port);

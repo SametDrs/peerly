@@ -24,6 +24,7 @@ tokio-tungstenite = "0.30.0"
 futures-util = "0.3.34"
 if-addrs = "0.15.0"
 mdns-sd = "0.21.7"
+mainline = "8.0.1"
 
 [dev-dependencies]
 anyhow.workspace = true

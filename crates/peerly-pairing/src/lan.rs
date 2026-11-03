@@ -18,7 +18,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::code::Code;
 use crate::mailbox::Mailbox;
-use crate::net::Local;
+use crate::net::{Discovery, Local};
 use crate::seal::Role;
 use crate::{PairingError, exchange, mdns};
 
@@ -86,7 +86,7 @@ async fn exchange_and_close(
     code: &str,
     role: Role,
 ) -> Result<(Local, PeerInfo), PairingError> {
-    let r = exchange(&mut mb, code, role, None).await;
+    let r = exchange(&mut mb, code, role, Discovery::LanOnly).await;
     mb.close().await;
     r
 }

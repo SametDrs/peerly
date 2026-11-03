@@ -159,6 +159,45 @@ pub mod lan {
     }
 }
 
+/// Serverless pairing over the internet, using BitTorrent Mainline DHT (BEP 44
+/// mutable items) as a mailbox.
+///
+/// Every item for nameplate `N` is signed with an Ed25519 key whose seed is
+/// `SHA-256(KEY_DOMAIN || decimal(N))`. Anyone can derive it on purpose: it is
+/// an *address*, not an authenticator. Only the nameplate goes into it, never
+/// the code words, so the DHT gives no offline way to test guesses. SPAKE2
+/// authenticates; a forged item costs an attacker their single online guess.
+///
+/// Slots (BEP 44 salt): sender writes [`dht::SALT_SENDER_PAKE`], then
+/// [`dht::SALT_SENDER_SEALED`]; receiver writes [`dht::SALT_RECEIVER_PAKE`],
+/// then [`dht::SALT_RECEIVER_SEALED`]. The value is postcard([`dht::DhtItem`]),
+/// at most 1000 bytes.
+pub mod dht {
+    use serde::{Deserialize, Serialize};
+
+    use crate::pairing::PairingMsg;
+
+    pub const KEY_DOMAIN: &[u8] = b"peerly/1/dht/";
+    pub const SALT_SENDER_PAKE: &[u8] = b"s1";
+    pub const SALT_SENDER_SEALED: &[u8] = b"s2";
+    pub const SALT_RECEIVER_PAKE: &[u8] = b"r1";
+    pub const SALT_RECEIVER_SEALED: &[u8] = b"r2";
+    /// Items older than this are stale. A sender treats a fresh `s1` on its
+    /// nameplate as "taken" and picks another nameplate.
+    pub const ITEM_MAX_AGE_SECS: u64 = 600;
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct DhtItem {
+        pub version: u16,
+        /// Random per pairing attempt, chosen by the sender in `s1`. Every later
+        /// item echoes it, so leftovers from older sessions are ignored.
+        pub session: [u8; 16],
+        /// Unix seconds when written.
+        pub created: u64,
+        pub msg: PairingMsg,
+    }
+}
+
 /// File transfer protocol over an established QUIC connection.
 ///
 /// - Control: one bidirectional stream opened by the sender, framed [`Control`] messages.

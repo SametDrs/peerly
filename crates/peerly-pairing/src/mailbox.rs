@@ -5,9 +5,10 @@
 //! Implementations:
 //! - [`crate::rendezvous::RendezvousMailbox`]: the rendezvous server's `Relay`.
 //! - [`crate::lan::LanMailbox`]: a direct TCP connection found via mDNS.
+//! - [`crate::dht::DhtMailbox`]: BEP 44 mutable items on the Mainline DHT.
 //!
-//! A future DHT mailbox only has to implement [`Mailbox`] and be raced
-//! alongside the others in `PendingSend::wait_for_peer` / `join`.
+//! The sender races all of its mailboxes in `PendingSend::wait_for_peer`; the
+//! receiver tries them in `join`.
 
 use std::future::Future;
 
@@ -24,4 +25,12 @@ pub(crate) trait Mailbox: Send {
 
     /// Best-effort graceful close once the exchange is over (or failed).
     fn close(self) -> impl Future<Output = ()> + Send;
+
+    /// True if the first `recv` is "wait for the peer to show up" (DHT sender):
+    /// it then has no timeout, and the local socket/STUN preparation is deferred
+    /// until it returns so the NAT mapping is fresh. Other mailboxes wait for
+    /// the peer before the exchange starts.
+    fn waits_for_peer(&self) -> bool {
+        false
+    }
 }

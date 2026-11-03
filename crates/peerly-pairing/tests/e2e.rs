@@ -15,6 +15,7 @@ async fn cfg() -> Config {
     Config {
         rendezvous_url: Some(mock_rendezvous::start().await),
         lan: false,
+        dht: false,
     }
 }
 
@@ -122,6 +123,7 @@ async fn invalid_code_and_unreachable_server() {
     let dead = Config {
         rendezvous_url: Some("ws://127.0.0.1:1".into()),
         lan: false,
+        dht: false,
     };
     let r = allocate(&dead).await;
     assert!(
@@ -206,8 +208,10 @@ async fn certificate_pinning() {
 /// Pairs a sender (`scfg`) with a receiver (`rcfg`) and echoes a message.
 /// Returns (sender route, receiver route).
 async fn echo_pair(scfg: &Config, rcfg: &Config) -> (Route, Route) {
+    let t = std::time::Instant::now();
     let pending = allocate(scfg).await.unwrap();
     let code = pending.code().to_string();
+    println!("code {code} ready after {:?}", t.elapsed());
     let sender = tokio::spawn(async move {
         let p = pending
             .wait_for_peer(CancellationToken::new())
@@ -220,7 +224,8 @@ async fn echo_pair(scfg: &Config, rcfg: &Config) -> (Route, Route) {
         let _ = p.connection.closed().await;
         p.route
     });
-    let p = tokio::time::timeout(T, join(rcfg, &code, CancellationToken::new()))
+    // Generous: the real-DHT test does several network lookups here.
+    let p = tokio::time::timeout(3 * T, join(rcfg, &code, CancellationToken::new()))
         .await
         .unwrap()
         .unwrap();
@@ -244,6 +249,7 @@ async fn sender_with_lan_pairs_over_rendezvous() {
     let rcfg = cfg().await;
     let scfg = Config {
         lan: true,
+        dht: false,
         ..rcfg.clone()
     };
     assert_eq!(echo_pair(&scfg, &rcfg).await, (Route::Lan, Route::Lan));
@@ -254,6 +260,7 @@ async fn lan_disabled_without_rendezvous_is_an_error() {
     let none = Config {
         rendezvous_url: None,
         lan: false,
+        dht: false,
     };
     assert!(allocate(&none).await.is_err());
     let r = join(&none, "42-river-candle", CancellationToken::new()).await;
@@ -272,6 +279,24 @@ async fn lan_only_mdns_pair_and_echo() {
     let lan = Config {
         rendezvous_url: None,
         lan: true,
+        dht: false,
     };
     assert_eq!(echo_pair(&lan, &lan).await, (Route::Lan, Route::Lan));
+}
+
+/// Real public Mainline DHT + real STUN, no server and no LAN discovery: two
+/// endpoints on this machine. Needs internet access:
+/// `cargo test -p peerly-pairing --test e2e real_dht -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore = "needs internet (public Mainline DHT + STUN)"]
+async fn real_dht_pair_and_echo() {
+    let dht = Config {
+        rendezvous_url: None,
+        lan: false,
+        dht: true,
+    };
+    let start = std::time::Instant::now();
+    let routes = echo_pair(&dht, &dht).await;
+    println!("real DHT pairing + echo took {:?}", start.elapsed());
+    assert_eq!(routes.0, routes.1);
 }
