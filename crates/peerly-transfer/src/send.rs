@@ -13,8 +13,8 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    BUF_SIZE, CLOSE_CANCEL, CLOSE_DONE, MAX_PARALLEL_STREAMS, ProgressTicker, Summary, TransferError,
-    TransferEvent, abort, classify, conn_err, join_err, kind, manifest, paths,
+    BUF_SIZE, CLOSE_CANCEL, CLOSE_DONE, MAX_PARALLEL_STREAMS, ProgressTicker, Summary,
+    TransferError, TransferEvent, abort, classify, conn_err, join_err, kind, manifest, paths,
 };
 
 pub(crate) async fn send(
@@ -26,7 +26,17 @@ pub(crate) async fn send(
     let mut ctrl = None;
     let mut workers = JoinSet::new();
     let stop = CancellationToken::new();
-    match run(conn, paths, &events, &cancel, &mut ctrl, &mut workers, &stop).await {
+    match run(
+        conn,
+        paths,
+        &events,
+        &cancel,
+        &mut ctrl,
+        &mut workers,
+        &stop,
+    )
+    .await
+    {
         Ok(s) => Ok(s),
         Err(e) => {
             // Reset in-flight data streams first: this drops their buffered
@@ -84,13 +94,21 @@ async fn run(
         Control::Accept => {}
         Control::Reject => return Err(TransferError::Rejected),
         Control::Cancel { reason } => return Err(TransferError::PeerCancelled(reason)),
-        other => return Err(TransferError::Protocol(format!("unexpected {}", kind(&other)))),
+        other => {
+            return Err(TransferError::Protocol(format!(
+                "unexpected {}",
+                kind(&other)
+            )));
+        }
     }
 
     let start = Instant::now();
     let total = manifest.total_size;
     let n = manifest.files.len();
-    let _ = events.send(TransferEvent::Started { total_bytes: total, total_files: n as u32 });
+    let _ = events.send(TransferEvent::Started {
+        total_bytes: total,
+        total_files: n as u32,
+    });
     let shared = Arc::new(Shared {
         conn: conn.clone(),
         files: manifest.files,
@@ -123,7 +141,11 @@ async fn run(
     }
     ticker.emit(&shared.bytes, events, true);
     conn.close(CLOSE_DONE.into(), b"done");
-    Ok(Summary { files: n as u32, bytes: total, elapsed: start.elapsed() })
+    Ok(Summary {
+        files: n as u32,
+        bytes: total,
+        elapsed: start.elapsed(),
+    })
 }
 
 async fn worker(s: Arc<Shared>, stop: CancellationToken) -> Result<(), TransferError> {
@@ -160,7 +182,14 @@ async fn send_file(
     let entry = &s.files[i];
     let mut file = tokio::fs::File::open(&s.sources[i]).await?;
     let stream = slot.insert(s.conn.open_uni().await.map_err(conn_err)?);
-    write_frame(stream, &StreamHeader { index: entry.index, offset: 0 }).await?;
+    write_frame(
+        stream,
+        &StreamHeader {
+            index: entry.index,
+            offset: 0,
+        },
+    )
+    .await?;
     let mut hasher = blake3::Hasher::new();
     let mut remaining = entry.size;
     while remaining > 0 {
@@ -177,8 +206,13 @@ async fn send_file(
         remaining -= n as u64;
         s.bytes.fetch_add(n as u64, Ordering::Relaxed);
     }
-    stream.write_all(hasher.finalize().as_bytes()).await.map_err(conn_err)?;
+    stream
+        .write_all(hasher.finalize().as_bytes())
+        .await
+        .map_err(conn_err)?;
     stream.finish().map_err(conn_err)?;
-    let _ = s.events.send(TransferEvent::FileCompleted { path: entry.path.clone() });
+    let _ = s.events.send(TransferEvent::FileCompleted {
+        path: entry.path.clone(),
+    });
     Ok(())
 }

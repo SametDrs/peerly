@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use peerly_proto::probe::{ProbeRequest, ProbeResponse, MAGIC};
+use peerly_proto::probe::{MAGIC, ProbeRequest, ProbeResponse};
 use peerly_proto::rendezvous::{ClientMsg, ErrorCode, ServerMsg};
-use peerly_proto::{decode, encode, PROTOCOL_VERSION};
+use peerly_proto::{PROTOCOL_VERSION, decode, encode};
 use peerly_rendezvous::{Server, ServerConfig};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -11,7 +11,10 @@ type Ws =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn start(f: impl FnOnce(&mut ServerConfig)) -> std::net::SocketAddr {
-    let mut cfg = ServerConfig { listen: "127.0.0.1:0".parse().unwrap(), ..Default::default() };
+    let mut cfg = ServerConfig {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        ..Default::default()
+    };
     f(&mut cfg);
     let s = Server::bind(cfg).await.unwrap();
     let a = s.local_addr();
@@ -20,7 +23,9 @@ async fn start(f: impl FnOnce(&mut ServerConfig)) -> std::net::SocketAddr {
 }
 
 async fn tx(ws: &mut Ws, m: ClientMsg) {
-    ws.send(Message::Text(serde_json::to_string(&m).unwrap().into())).await.unwrap();
+    ws.send(Message::Text(serde_json::to_string(&m).unwrap().into()))
+        .await
+        .unwrap();
 }
 
 async fn rx(ws: &mut Ws) -> ServerMsg {
@@ -37,8 +42,16 @@ async fn rx(ws: &mut Ws) -> ServerMsg {
 }
 
 async fn client(a: std::net::SocketAddr) -> Ws {
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{a}")).await.unwrap();
-    tx(&mut ws, ClientMsg::Hello { version: PROTOCOL_VERSION }).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{a}"))
+        .await
+        .unwrap();
+    tx(
+        &mut ws,
+        ClientMsg::Hello {
+            version: PROTOCOL_VERSION,
+        },
+    )
+    .await;
     assert!(matches!(rx(&mut ws).await, ServerMsg::Welcome { .. }));
     ws
 }
@@ -46,7 +59,9 @@ async fn client(a: std::net::SocketAddr) -> Ws {
 async fn pair(a: std::net::SocketAddr) -> (Ws, Ws, u32) {
     let mut x = client(a).await;
     tx(&mut x, ClientMsg::Allocate).await;
-    let ServerMsg::Allocated { nameplate } = rx(&mut x).await else { panic!() };
+    let ServerMsg::Allocated { nameplate } = rx(&mut x).await else {
+        panic!()
+    };
     let mut y = client(a).await;
     tx(&mut y, ClientMsg::Claim { nameplate }).await;
     assert_eq!(rx(&mut y).await, ServerMsg::Claimed);
@@ -61,7 +76,9 @@ fn is_err(m: ServerMsg, c: ErrorCode) -> bool {
 #[tokio::test]
 async fn version_mismatch() {
     let a = start(|_| {}).await;
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{a}")).await.unwrap();
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{a}"))
+        .await
+        .unwrap();
     tx(&mut ws, ClientMsg::Hello { version: 999 }).await;
     assert!(is_err(rx(&mut ws).await, ErrorCode::VersionMismatch));
     loop {
@@ -77,8 +94,19 @@ async fn allocate_claim_relay_and_leave() {
     let a = start(|_| {}).await;
     let (mut x, mut y, n) = pair(a).await;
     assert!((1..=99).contains(&n));
-    tx(&mut x, ClientMsg::Relay { payload: vec![1, 2] }).await;
-    assert_eq!(rx(&mut y).await, ServerMsg::Peer { payload: vec![1, 2] });
+    tx(
+        &mut x,
+        ClientMsg::Relay {
+            payload: vec![1, 2],
+        },
+    )
+    .await;
+    assert_eq!(
+        rx(&mut y).await,
+        ServerMsg::Peer {
+            payload: vec![1, 2]
+        }
+    );
     tx(&mut y, ClientMsg::Relay { payload: vec![3] }).await;
     assert_eq!(rx(&mut x).await, ServerMsg::Peer { payload: vec![3] });
     tx(&mut y, ClientMsg::Close).await;
@@ -94,7 +122,9 @@ async fn peer_left_on_disconnect_and_no_peer() {
     let a = start(|_| {}).await;
     let mut x = client(a).await;
     tx(&mut x, ClientMsg::Allocate).await;
-    let ServerMsg::Allocated { nameplate } = rx(&mut x).await else { panic!() };
+    let ServerMsg::Allocated { nameplate } = rx(&mut x).await else {
+        panic!()
+    };
     tx(&mut x, ClientMsg::Relay { payload: vec![1] }).await;
     assert!(is_err(rx(&mut x).await, ErrorCode::NoPeer));
     let mut y = client(a).await;
@@ -122,7 +152,9 @@ async fn expiry() {
     let a = start(|c| c.nameplate_ttl = Duration::from_millis(100)).await;
     let mut x = client(a).await;
     tx(&mut x, ClientMsg::Allocate).await;
-    let ServerMsg::Allocated { nameplate } = rx(&mut x).await else { panic!() };
+    let ServerMsg::Allocated { nameplate } = rx(&mut x).await else {
+        panic!()
+    };
     tokio::time::sleep(Duration::from_millis(300)).await;
     let mut y = client(a).await;
     tx(&mut y, ClientMsg::Claim { nameplate }).await;
@@ -133,9 +165,21 @@ async fn expiry() {
 async fn relay_size_limit() {
     let a = start(|_| {}).await;
     let (mut x, mut y, _) = pair(a).await;
-    tx(&mut x, ClientMsg::Relay { payload: vec![0; 9000] }).await;
+    tx(
+        &mut x,
+        ClientMsg::Relay {
+            payload: vec![0; 9000],
+        },
+    )
+    .await;
     assert!(is_err(rx(&mut x).await, ErrorCode::BadRequest));
-    tx(&mut x, ClientMsg::Relay { payload: vec![0; 8192] }).await;
+    tx(
+        &mut x,
+        ClientMsg::Relay {
+            payload: vec![0; 8192],
+        },
+    )
+    .await;
     assert!(matches!(rx(&mut y).await, ServerMsg::Peer { .. }));
 }
 
@@ -157,10 +201,21 @@ async fn udp_probe() {
     let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
     s.send_to(b"garbage", a).await.unwrap();
     let nonce = [7u8; 16];
-    s.send_to(&encode(&ProbeRequest { magic: MAGIC, nonce }).unwrap(), a).await.unwrap();
+    s.send_to(
+        &encode(&ProbeRequest {
+            magic: MAGIC,
+            nonce,
+        })
+        .unwrap(),
+        a,
+    )
+    .await
+    .unwrap();
     let mut buf = [0u8; 256];
-    let (n, _) =
-        tokio::time::timeout(Duration::from_secs(5), s.recv_from(&mut buf)).await.unwrap().unwrap();
+    let (n, _) = tokio::time::timeout(Duration::from_secs(5), s.recv_from(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
     let r: ProbeResponse = decode(&buf[..n]).unwrap();
     assert_eq!(r.nonce, nonce);
     assert_eq!(r.observed, s.local_addr().unwrap());

@@ -12,7 +12,10 @@ async fn send_produces_code() {
     let task = tokio::spawn(async move {
         peerly_core::send(&peerly_core::Config::from_env(), vec![dir], tx, c2).await
     });
-    let ev = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await.unwrap().unwrap();
+    let ev = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
     assert!(matches!(ev, peerly_core::Event::Code { .. }), "{ev:?}");
     cancel.cancel();
     let _ = task.await;

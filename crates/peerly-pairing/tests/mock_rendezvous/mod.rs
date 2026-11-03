@@ -30,12 +30,19 @@ pub async fn start() -> String {
             if let Ok(req) = peerly_proto::decode::<ProbeRequest>(&buf[..n])
                 && req.magic == MAGIC
             {
-                let resp = peerly_proto::encode(&ProbeResponse { nonce: req.nonce, observed: from }).unwrap();
+                let resp = peerly_proto::encode(&ProbeResponse {
+                    nonce: req.nonce,
+                    observed: from,
+                })
+                .unwrap();
                 let _ = udp.send_to(&resp, from).await;
             }
         }
     });
-    let state = Arc::new(Mutex::new(State { next: 1, ..Default::default() }));
+    let state = Arc::new(Mutex::new(State {
+        next: 1,
+        ..Default::default()
+    }));
     tokio::spawn(async move {
         while let Ok((s, _)) = tcp.accept().await {
             tokio::spawn(client(s, state.clone()));
@@ -45,22 +52,33 @@ pub async fn start() -> String {
 }
 
 async fn client(stream: TcpStream, state: Arc<Mutex<State>>) {
-    let Ok(ws) = tokio_tungstenite::accept_async(stream).await else { return };
+    let Ok(ws) = tokio_tungstenite::accept_async(stream).await else {
+        return;
+    };
     let (mut sink, mut stream) = ws.split();
     let (tx, mut rx) = unbounded_channel::<ServerMsg>();
     tokio::spawn(async move {
         while let Some(m) = rx.recv().await {
-            if sink.send(Message::text(serde_json::to_string(&m).unwrap())).await.is_err() {
+            if sink
+                .send(Message::text(serde_json::to_string(&m).unwrap()))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
         let _ = sink.close().await;
     });
-    let err = |code, message: &str| ServerMsg::Error { code, message: message.into() };
+    let err = |code, message: &str| ServerMsg::Error {
+        code,
+        message: message.into(),
+    };
     let mut joined: Option<(u32, usize)> = None;
     while let Some(Ok(msg)) = stream.next().await {
         let Message::Text(t) = msg else { continue };
-        let Ok(msg) = serde_json::from_str::<ClientMsg>(t.as_str()) else { break };
+        let Ok(msg) = serde_json::from_str::<ClientMsg>(t.as_str()) else {
+            break;
+        };
         let reply = {
             let mut st = state.lock().unwrap();
             match msg {
@@ -86,7 +104,8 @@ async fn client(stream: TcpStream, state: Arc<Mutex<State>>) {
                     }
                 },
                 ClientMsg::Relay { payload } => {
-                    let other = joined.and_then(|(n, side)| st.slots.get(&n).and_then(|s| s[1 - side].clone()));
+                    let other = joined
+                        .and_then(|(n, side)| st.slots.get(&n).and_then(|s| s[1 - side].clone()));
                     match other {
                         Some(o) => {
                             let _ = o.send(ServerMsg::Peer { payload });

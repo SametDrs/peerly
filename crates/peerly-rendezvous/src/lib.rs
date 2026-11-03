@@ -9,13 +9,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
-use peerly_proto::probe::{ProbeRequest, ProbeResponse, MAGIC};
-use peerly_proto::rendezvous::{ClientMsg, ErrorCode, ServerMsg, NAMEPLATE_TTL_SECS};
-use peerly_proto::{decode, encode, PROTOCOL_VERSION};
+use peerly_proto::probe::{MAGIC, ProbeRequest, ProbeResponse};
+use peerly_proto::rendezvous::{ClientMsg, ErrorCode, NAMEPLATE_TTL_SECS, ServerMsg};
+use peerly_proto::{PROTOCOL_VERSION, decode, encode};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 pub const MAX_WS_MESSAGE: usize = 64 * 1024;
 pub const MAX_RELAY_PAYLOAD: usize = 8 * 1024;
@@ -78,18 +78,28 @@ fn send(tx: &Tx, m: &ServerMsg) {
 }
 
 fn err(tx: &Tx, code: ErrorCode, message: &str) {
-    send(tx, &ServerMsg::Error { code, message: message.into() });
+    send(
+        tx,
+        &ServerMsg::Error {
+            code,
+            message: message.into(),
+        },
+    );
 }
 
 fn rand_u64() -> u64 {
-    std::collections::hash_map::RandomState::new().build_hasher().finish()
+    std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish()
 }
 
 impl State {
     fn rate_ok(&self, inner: &mut Inner, ip: IpAddr) -> bool {
         let now = Instant::now();
         if inner.rate.len() > 50_000 {
-            inner.rate.retain(|_, (s, _)| now.duration_since(*s) < Duration::from_secs(60));
+            inner
+                .rate
+                .retain(|_, (s, _)| now.duration_since(*s) < Duration::from_secs(60));
         }
         let e = inner.rate.entry(ip).or_insert((now, 0));
         if now.duration_since(e.0) >= Duration::from_secs(60) {
@@ -110,7 +120,11 @@ impl State {
         for n in dead {
             if let Some(p) = inner.plates.remove(&n) {
                 inner.by_conn.remove(&p.owner.id);
-                err(&p.owner.tx, ErrorCode::NameplateNotFound, "nameplate expired");
+                err(
+                    &p.owner.tx,
+                    ErrorCode::NameplateNotFound,
+                    "nameplate expired",
+                );
             }
         }
     }
@@ -137,9 +151,15 @@ impl State {
     /// Remove the connection's nameplate (if any), telling the other side.
     fn leave(&self, id: u64) {
         let mut g = self.inner.lock().unwrap();
-        let Some(n) = g.by_conn.remove(&id) else { return };
+        let Some(n) = g.by_conn.remove(&id) else {
+            return;
+        };
         if let Some(p) = g.plates.remove(&n) {
-            let other = if p.owner.id == id { p.joiner } else { Some(p.owner) };
+            let other = if p.owner.id == id {
+                p.joiner
+            } else {
+                Some(p.owner)
+            };
             if let Some(o) = other {
                 g.by_conn.remove(&o.id);
                 send(&o.tx, &ServerMsg::PeerLeft);
@@ -207,7 +227,11 @@ impl State {
                     err(tx, ErrorCode::NoPeer, "no peer");
                     return true;
                 };
-                let other = if p.owner.id == id { p.joiner.as_ref() } else { Some(&p.owner) };
+                let other = if p.owner.id == id {
+                    p.joiner.as_ref()
+                } else {
+                    Some(&p.owner)
+                };
                 let Some(other) = other else {
                     err(tx, ErrorCode::NoPeer, "no peer");
                     return true;
@@ -250,7 +274,11 @@ async fn handle_conn(state: Arc<State>, stream: TcpStream, peer: SocketAddr) {
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
     let mut greeted = false;
     loop {
-        let t = if greeted { state.cfg.idle_timeout } else { Duration::from_secs(30) };
+        let t = if greeted {
+            state.cfg.idle_timeout
+        } else {
+            Duration::from_secs(30)
+        };
         let m = match tokio::time::timeout(t, stream.next()).await {
             Ok(Some(Ok(m))) => m,
             _ => break,
@@ -265,10 +293,19 @@ async fn handle_conn(state: Arc<State>, stream: TcpStream, peer: SocketAddr) {
                     match msg {
                         ClientMsg::Hello { version } if version == PROTOCOL_VERSION => {
                             greeted = true;
-                            send(&tx, &ServerMsg::Welcome { version: PROTOCOL_VERSION });
+                            send(
+                                &tx,
+                                &ServerMsg::Welcome {
+                                    version: PROTOCOL_VERSION,
+                                },
+                            );
                         }
                         ClientMsg::Hello { .. } => {
-                            err(&tx, ErrorCode::VersionMismatch, "unsupported protocol version");
+                            err(
+                                &tx,
+                                ErrorCode::VersionMismatch,
+                                "unsupported protocol version",
+                            );
                             break;
                         }
                         _ => {
@@ -302,12 +339,19 @@ async fn handle_conn(state: Arc<State>, stream: TcpStream, peer: SocketAddr) {
 async fn udp_loop(sock: UdpSocket) {
     let mut buf = [0u8; 256];
     loop {
-        let Ok((n, src)) = sock.recv_from(&mut buf).await else { continue };
-        let Ok(req) = decode::<ProbeRequest>(&buf[..n]) else { continue };
+        let Ok((n, src)) = sock.recv_from(&mut buf).await else {
+            continue;
+        };
+        let Ok(req) = decode::<ProbeRequest>(&buf[..n]) else {
+            continue;
+        };
         if req.magic != MAGIC {
             continue;
         }
-        if let Ok(out) = encode(&ProbeResponse { nonce: req.nonce, observed: src }) {
+        if let Ok(out) = encode(&ProbeResponse {
+            nonce: req.nonce,
+            observed: src,
+        }) {
             let _ = sock.send_to(&out, src).await;
         }
     }
@@ -329,7 +373,14 @@ impl Server {
             let tcp = TcpListener::bind(cfg.listen).await?;
             let addr = tcp.local_addr()?;
             match UdpSocket::bind(addr).await {
-                Ok(udp) => return Ok(Self { tcp, udp, cfg, addr }),
+                Ok(udp) => {
+                    return Ok(Self {
+                        tcp,
+                        udp,
+                        cfg,
+                        addr,
+                    });
+                }
                 Err(e) if cfg.listen.port() == 0 => last = Some(e),
                 Err(e) => return Err(e.into()),
             }

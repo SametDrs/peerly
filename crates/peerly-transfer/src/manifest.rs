@@ -26,7 +26,11 @@ struct Builder {
 
 impl Builder {
     fn add_file(&mut self, src: PathBuf, rel: String, size: u64) {
-        self.files.push(FileEntry { index: self.files.len() as u32, path: rel, size });
+        self.files.push(FileEntry {
+            index: self.files.len() as u32,
+            path: rel,
+            size,
+        });
         self.sources.push(src);
         self.total += size;
     }
@@ -68,7 +72,12 @@ pub(crate) fn build(paths: &[PathBuf]) -> io::Result<(Manifest, Vec<PathBuf>)> {
     if paths.is_empty() {
         return Err(invalid("nothing to send".into()));
     }
-    let mut b = Builder { files: Vec::new(), sources: Vec::new(), empty_dirs: Vec::new(), total: 0 };
+    let mut b = Builder {
+        files: Vec::new(),
+        sources: Vec::new(),
+        empty_dirs: Vec::new(),
+        total: 0,
+    };
     let mut tops = HashSet::new();
     let mut items = 0usize;
     let mut single_name = String::new();
@@ -92,11 +101,21 @@ pub(crate) fn build(paths: &[PathBuf]) -> io::Result<(Manifest, Vec<PathBuf>)> {
         single_name = name;
     }
     if items == 0 {
-        return Err(invalid("nothing to send (only symlinks or special files)".into()));
+        return Err(invalid(
+            "nothing to send (only symlinks or special files)".into(),
+        ));
     }
-    let name = if items == 1 { single_name } else { format!("{items} items") };
-    let manifest =
-        Manifest { name, files: b.files, empty_dirs: b.empty_dirs, total_size: b.total };
+    let name = if items == 1 {
+        single_name
+    } else {
+        format!("{items} items")
+    };
+    let manifest = Manifest {
+        name,
+        files: b.files,
+        empty_dirs: b.empty_dirs,
+        total_size: b.total,
+    };
     Ok((manifest, b.sources))
 }
 

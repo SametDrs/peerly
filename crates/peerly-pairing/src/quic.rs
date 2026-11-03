@@ -9,7 +9,9 @@ use peerly_proto::pairing::PeerInfo;
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use quinn::{Connection, Endpoint, EndpointConfig, TokioRuntime, TransportConfig, VarInt};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::{CryptoProvider, WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature};
+use rustls::crypto::{
+    CryptoProvider, WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature,
+};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{CertificateError, DigitallySignedStruct, DistinguishedName, SignatureScheme};
@@ -53,7 +55,11 @@ impl Identity {
         let cert = ck.cert.der().clone();
         let key = PrivatePkcs8KeyDer::from(ck.signing_key.serialize_der());
         let fingerprint = fingerprint(&cert);
-        Ok(Identity { cert, key, fingerprint })
+        Ok(Identity {
+            cert,
+            key,
+            fingerprint,
+        })
     }
 
     fn key(&self) -> PrivateKeyDer<'static> {
@@ -92,7 +98,9 @@ impl Pinned {
         if fingerprint(end_entity) == self.fingerprint {
             Ok(())
         } else {
-            Err(rustls::Error::InvalidCertificate(CertificateError::ApplicationVerificationFailure))
+            Err(rustls::Error::InvalidCertificate(
+                CertificateError::ApplicationVerificationFailure,
+            ))
         }
     }
 }
@@ -106,7 +114,8 @@ impl ServerCertVerifier for Pinned {
         _ocsp: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        self.check(end_entity).map(|_| ServerCertVerified::assertion())
+        self.check(end_entity)
+            .map(|_| ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
@@ -147,7 +156,8 @@ impl ClientCertVerifier for Pinned {
         _intermediates: &[CertificateDer<'_>],
         _now: UnixTime,
     ) -> Result<ClientCertVerified, rustls::Error> {
-        self.check(end_entity).map(|_| ClientCertVerified::assertion())
+        self.check(end_entity)
+            .map(|_| ClientCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
@@ -174,9 +184,15 @@ impl ClientCertVerifier for Pinned {
 }
 
 /// Sender (QUIC server) config: presents `me`, requires a client cert with `peer_fingerprint`.
-pub fn server_config(me: &Identity, peer_fingerprint: [u8; 32]) -> Result<quinn::ServerConfig, PairingError> {
+pub fn server_config(
+    me: &Identity,
+    peer_fingerprint: [u8; 32],
+) -> Result<quinn::ServerConfig, PairingError> {
     let provider = provider();
-    let verifier = Arc::new(Pinned { fingerprint: peer_fingerprint, algs: provider.signature_verification_algorithms });
+    let verifier = Arc::new(Pinned {
+        fingerprint: peer_fingerprint,
+        algs: provider.signature_verification_algorithms,
+    });
     let mut tls = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(tls_err)?
@@ -191,9 +207,15 @@ pub fn server_config(me: &Identity, peer_fingerprint: [u8; 32]) -> Result<quinn:
 }
 
 /// Receiver (QUIC client) config: presents `me`, requires a server cert with `peer_fingerprint`.
-pub fn client_config(me: &Identity, peer_fingerprint: [u8; 32]) -> Result<quinn::ClientConfig, PairingError> {
+pub fn client_config(
+    me: &Identity,
+    peer_fingerprint: [u8; 32],
+) -> Result<quinn::ClientConfig, PairingError> {
     let provider = provider();
-    let verifier = Arc::new(Pinned { fingerprint: peer_fingerprint, algs: provider.signature_verification_algorithms });
+    let verifier = Arc::new(Pinned {
+        fingerprint: peer_fingerprint,
+        algs: provider.signature_verification_algorithms,
+    });
     let mut tls = rustls::ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(tls_err)?
@@ -209,7 +231,11 @@ pub fn client_config(me: &Identity, peer_fingerprint: [u8; 32]) -> Result<quinn:
 }
 
 fn route_for(addr: SocketAddr) -> Route {
-    if net::is_lan(addr.ip()) { Route::Lan } else { Route::Internet }
+    if net::is_lan(addr.ip()) {
+        Route::Lan
+    } else {
+        Route::Internet
+    }
 }
 
 /// Aborts the task when dropped (e.g. on cancellation).
@@ -238,7 +264,12 @@ pub(crate) async fn accept(local: Local, peer: PeerInfo) -> Result<Paired, Pairi
     let targets = net::sanitize(peer.candidates);
     let server_cfg = server_config(&local.identity, peer.cert_fingerprint)?;
     let punch_sock = local.socket.try_clone()?;
-    let endpoint = Endpoint::new(EndpointConfig::default(), Some(server_cfg), local.socket, Arc::new(TokioRuntime))?;
+    let endpoint = Endpoint::new(
+        EndpointConfig::default(),
+        Some(server_cfg),
+        local.socket,
+        Arc::new(TokioRuntime),
+    )?;
     let _punch = AbortOnDrop(tokio::spawn(punch(punch_sock, targets)));
 
     let connection = tokio::time::timeout(CONNECT_TIMEOUT, accept_selected(&endpoint))
@@ -247,7 +278,12 @@ pub(crate) async fn accept(local: Local, peer: PeerInfo) -> Result<Paired, Pairi
         .flatten()
         .ok_or(PairingError::PeerUnreachable)?;
     let peer_addr = net::normalize(connection.remote_address());
-    Ok(Paired { connection, endpoint, peer_addr, route: route_for(peer_addr) })
+    Ok(Paired {
+        connection,
+        endpoint,
+        peer_addr,
+        route: route_for(peer_addr),
+    })
 }
 
 /// Accepts handshakes until the receiver marks one as selected; the rest are dropped.
@@ -278,7 +314,12 @@ async fn accept_selected(endpoint: &Endpoint) -> Option<Connection> {
 pub(crate) async fn connect(local: Local, peer: PeerInfo) -> Result<Paired, PairingError> {
     let targets = net::sanitize(peer.candidates);
     let client_cfg = client_config(&local.identity, peer.cert_fingerprint)?;
-    let mut endpoint = Endpoint::new(EndpointConfig::default(), None, local.socket, Arc::new(TokioRuntime))?;
+    let mut endpoint = Endpoint::new(
+        EndpointConfig::default(),
+        None,
+        local.socket,
+        Arc::new(TokioRuntime),
+    )?;
     endpoint.set_default_client_config(client_cfg);
 
     let race = async {
@@ -310,8 +351,18 @@ pub(crate) async fn connect(local: Local, peer: PeerInfo) -> Result<Paired, Pair
         .flatten()
         .ok_or(PairingError::PeerUnreachable)?;
 
-    let mut s = connection.open_uni().await.map_err(|_| PairingError::PeerUnreachable)?;
-    s.write_all(&[SELECTED]).await.map_err(|_| PairingError::PeerUnreachable)?;
+    let mut s = connection
+        .open_uni()
+        .await
+        .map_err(|_| PairingError::PeerUnreachable)?;
+    s.write_all(&[SELECTED])
+        .await
+        .map_err(|_| PairingError::PeerUnreachable)?;
     s.finish().map_err(|_| PairingError::PeerUnreachable)?;
-    Ok(Paired { connection, endpoint, peer_addr: addr, route: route_for(addr) })
+    Ok(Paired {
+        connection,
+        endpoint,
+        peer_addr: addr,
+        route: route_for(addr),
+    })
 }

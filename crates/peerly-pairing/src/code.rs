@@ -33,7 +33,10 @@ impl Code {
         let mut buf = [0u8; 4];
         getrandom::fill(&mut buf).expect("OS random number generator unavailable");
         let pick = |b: [u8; 2]| words[usize::from(u16::from_le_bytes(b)) % words.len()].to_string();
-        Code { nameplate, words: [pick([buf[0], buf[1]]), pick([buf[2], buf[3]])] }
+        Code {
+            nameplate,
+            words: [pick([buf[0], buf[1]]), pick([buf[2], buf[3]])],
+        }
     }
 
     /// Lenient parse: trims, lowercases, accepts spaces/underscores instead of
@@ -44,7 +47,9 @@ impl Code {
             .split(|c: char| c == '-' || c == '_' || c.is_whitespace())
             .filter(|p| !p.is_empty())
             .collect();
-        let [nameplate, w1, w2] = parts.as_slice() else { return None };
+        let [nameplate, w1, w2] = parts.as_slice() else {
+            return None;
+        };
         if nameplate.len() > 9 || !nameplate.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
@@ -52,7 +57,10 @@ impl Code {
         if !is_word(w1) || !is_word(w2) {
             return None;
         }
-        Some(Code { nameplate, words: [w1.to_string(), w2.to_string()] })
+        Some(Code {
+            nameplate,
+            words: [w1.to_string(), w2.to_string()],
+        })
     }
 }
 
@@ -71,7 +79,10 @@ mod tests {
         let w = wordlist();
         assert_eq!(w.len(), WORDLIST_LEN);
         assert!(w.windows(2).all(|p| p[0] < p[1]), "sorted and unique");
-        assert!(w.iter().all(|x| (3..=7).contains(&x.len()) && x.bytes().all(|b| b.is_ascii_lowercase())));
+        assert!(
+            w.iter()
+                .all(|x| (3..=7).contains(&x.len()) && x.bytes().all(|b| b.is_ascii_lowercase()))
+        );
     }
 
     #[test]
@@ -91,8 +102,17 @@ mod tests {
 
     #[test]
     fn parse_is_lenient() {
-        let want = Code { nameplate: 42, words: ["river".into(), "candle".into()] };
-        for s in ["42-river-candle", "  42-River-CANDLE \n", "42 river candle", "42--river - candle", "42_river_candle"] {
+        let want = Code {
+            nameplate: 42,
+            words: ["river".into(), "candle".into()],
+        };
+        for s in [
+            "42-river-candle",
+            "  42-River-CANDLE \n",
+            "42 river candle",
+            "42--river - candle",
+            "42_river_candle",
+        ] {
             assert_eq!(Code::parse(s).as_ref(), Some(&want), "{s:?}");
         }
         assert_eq!(want.to_string(), "42-river-candle");
@@ -100,8 +120,17 @@ mod tests {
 
     #[test]
     fn parse_rejects_garbage() {
-        for s in ["", "42", "42-river", "42-river-candle-x", "x-river-candle","+4-river-candle",
-            "42-river-notaword", "99999999999-river-candle", "42-rivér-candle"] {
+        for s in [
+            "",
+            "42",
+            "42-river",
+            "42-river-candle-x",
+            "x-river-candle",
+            "+4-river-candle",
+            "42-river-notaword",
+            "99999999999-river-candle",
+            "42-rivér-candle",
+        ] {
             assert_eq!(Code::parse(s), None, "{s:?}");
         }
     }

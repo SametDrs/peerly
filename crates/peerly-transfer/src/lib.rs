@@ -26,10 +26,18 @@ pub enum TransferEvent {
     /// Receiver side: manifest arrived, waiting for the accept decision.
     Offered(Manifest),
     /// Peer accepted (sender) / we accepted (receiver); bytes start flowing.
-    Started { total_bytes: u64, total_files: u32 },
+    Started {
+        total_bytes: u64,
+        total_files: u32,
+    },
     /// Emitted at most every ~100 ms.
-    Progress { bytes_done: u64, bytes_total: u64 },
-    FileCompleted { path: String },
+    Progress {
+        bytes_done: u64,
+        bytes_total: u64,
+    },
+    FileCompleted {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -164,7 +172,9 @@ pub(crate) async fn abort(
     {
         // Give the frame a short chance to be acknowledged before the close
         // discards it; the close reason carries the same text as a fallback.
-        let msg = peerly_proto::transfer::Control::Cancel { reason: reason.clone() };
+        let msg = peerly_proto::transfer::Control::Cancel {
+            reason: reason.clone(),
+        };
         let deliver = async {
             if peerly_proto::frame::write_frame(tx, &msg).await.is_ok() && tx.finish().is_ok() {
                 let _ = tx.stopped().await;
@@ -191,7 +201,11 @@ impl ProgressTicker {
     pub(crate) fn new(total: u64) -> Self {
         let mut interval = tokio::time::interval(PROGRESS_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        Self { interval, total, last: None }
+        Self {
+            interval,
+            total,
+            last: None,
+        }
     }
 
     pub(crate) async fn tick(&mut self) {
@@ -208,7 +222,10 @@ impl ProgressTicker {
         let d = done.load(Ordering::Relaxed);
         if force || self.last != Some(d) {
             self.last = Some(d);
-            let _ = events.send(TransferEvent::Progress { bytes_done: d, bytes_total: self.total });
+            let _ = events.send(TransferEvent::Progress {
+                bytes_done: d,
+                bytes_total: self.total,
+            });
         }
     }
 }

@@ -43,7 +43,9 @@ impl ServerCertVerifier for SkipVerify {
         Ok(HandshakeSignatureValid::assertion())
     }
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        rustls::crypto::ring::default_provider().signature_verification_algorithms.supported_schemes()
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -91,10 +93,15 @@ pub async fn pair() -> Pair {
     client.set_default_client_config(ccfg);
 
     let addr = server.local_addr().unwrap();
-    let (s, c) = tokio::join!(async { server.accept().await.unwrap().await.unwrap() }, async {
-        client.connect(addr, "peerly").unwrap().await.unwrap()
-    });
-    Pair { sender: s, receiver: c, _eps: (server, client) }
+    let (s, c) = tokio::join!(
+        async { server.accept().await.unwrap().await.unwrap() },
+        async { client.connect(addr, "peerly").unwrap().await.unwrap() }
+    );
+    Pair {
+        sender: s,
+        receiver: c,
+        _eps: (server, client),
+    }
 }
 
 /// Deterministic pseudo-random bytes (xorshift), fast enough for tens of MB.
@@ -121,7 +128,11 @@ pub fn snapshot(root: &Path) -> BTreeMap<String, Option<Vec<u8>>> {
     fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, Option<Vec<u8>>>) {
         for e in std::fs::read_dir(dir).unwrap() {
             let p: PathBuf = e.unwrap().path();
-            let rel = p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+            let rel = p
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
             if p.is_dir() {
                 out.insert(rel, None);
                 walk(root, &p, out);

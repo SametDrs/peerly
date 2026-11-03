@@ -17,7 +17,10 @@ struct AppState {
 }
 
 fn emit_error(app: &AppHandle, code: &str, message: &str) {
-    let _ = app.emit(EVENT_NAME, serde_json::json!({ "kind": "error", "code": code, "message": message }));
+    let _ = app.emit(
+        EVENT_NAME,
+        serde_json::json!({ "kind": "error", "code": code, "message": message }),
+    );
 }
 
 /// Stable error code for the UI (translated there).
@@ -44,7 +47,10 @@ fn error_code(e: &peerly_core::Error) -> &'static str {
 }
 
 /// Registers a new task token (cancelling any previous one) and forwards core events to the webview.
-fn begin_task(app: &AppHandle, state: &AppState) -> (mpsc::UnboundedSender<Event>, CancellationToken) {
+fn begin_task(
+    app: &AppHandle,
+    state: &AppState,
+) -> (mpsc::UnboundedSender<Event>, CancellationToken) {
     let cancel = CancellationToken::new();
     if let Some(old) = state.task.lock().unwrap().replace(cancel.clone()) {
         old.cancel();
@@ -70,7 +76,11 @@ fn finish(app: &AppHandle, cancel: &CancellationToken, result: Result<(), peerly
 }
 
 #[tauri::command]
-fn start_send(app: AppHandle, state: State<'_, AppState>, paths: Vec<String>) -> Result<(), String> {
+fn start_send(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<(), String> {
     if paths.is_empty() {
         let msg = "No files selected".to_string();
         emit_error(&app, "other", &msg);
@@ -87,7 +97,12 @@ fn start_send(app: AppHandle, state: State<'_, AppState>, paths: Vec<String>) ->
 }
 
 #[tauri::command]
-fn start_receive(app: AppHandle, state: State<'_, AppState>, code: String, dest: String) -> Result<(), String> {
+fn start_receive(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    code: String,
+    dest: String,
+) -> Result<(), String> {
     if code.trim().is_empty() {
         let msg = "Empty code".to_string();
         emit_error(&app, "invalid_code", &msg);
@@ -99,9 +114,17 @@ fn start_receive(app: AppHandle, state: State<'_, AppState>, code: String, dest:
     tauri::async_runtime::spawn(async move {
         let cfg = peerly_core::Config::from_env();
         // The core emits `Event::Offer`; we just wait for the user's answer.
-        let decide = |_manifest: peerly_core::Manifest| async move { offer_rx.await.unwrap_or(false) };
-        let result =
-            peerly_core::receive(&cfg, code.trim(), Path::new(&dest), decide, tx, cancel.clone()).await;
+        let decide =
+            |_manifest: peerly_core::Manifest| async move { offer_rx.await.unwrap_or(false) };
+        let result = peerly_core::receive(
+            &cfg,
+            code.trim(),
+            Path::new(&dest),
+            decide,
+            tx,
+            cancel.clone(),
+        )
+        .await;
         finish(&app, &cancel, result);
     });
     Ok(())
@@ -138,7 +161,9 @@ struct PathsInfo {
 }
 
 fn walk(path: &Path, info: &mut PathsInfo, depth: u32) {
-    let Ok(meta) = std::fs::metadata(path) else { return };
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
     if meta.is_file() {
         info.files += 1;
         info.bytes += meta.len();

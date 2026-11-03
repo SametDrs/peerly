@@ -123,7 +123,10 @@ pub mod pairing {
         Pake(Vec<u8>),
         /// ChaCha20-Poly1305 sealed, postcard-encoded [`PeerInfo`]. Key derived
         /// from the SPAKE2 output via HKDF-SHA256. A decrypt failure means a wrong code.
-        Sealed { nonce: [u8; 12], ciphertext: Vec<u8> },
+        Sealed {
+            nonce: [u8; 12],
+            ciphertext: Vec<u8>,
+        },
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,7 +174,9 @@ pub mod transfer {
         /// Receiver -> sender once every file is written and verified.
         Done,
         /// Either side aborts.
-        Cancel { reason: String },
+        Cancel {
+            reason: String,
+        },
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,7 +232,11 @@ mod tests {
     async fn frame_roundtrip() {
         let msg = Control::Offer(Manifest {
             name: "photos".into(),
-            files: vec![FileEntry { index: 0, path: "photos/a.jpg".into(), size: 42 }],
+            files: vec![FileEntry {
+                index: 0,
+                path: "photos/a.jpg".into(),
+                size: 42,
+            }],
             empty_dirs: vec![],
             total_size: 42,
         });

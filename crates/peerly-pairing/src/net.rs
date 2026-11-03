@@ -44,22 +44,46 @@ pub(crate) async fn prepare(rendezvous_url: &str) -> Result<Local, PairingError>
     }
     candidates.truncate(MAX_CANDIDATES);
     let identity = Identity::generate()?;
-    Ok(Local { socket, candidates, identity })
+    Ok(Local {
+        socket,
+        candidates,
+        identity,
+    })
 }
 
 /// UDP probe target: same host and port as the WebSocket URL (IPv4 only).
 async fn probe_target(url: &str) -> Option<SocketAddr> {
     let uri: Uri = url.parse().ok()?;
-    let host = uri.host()?.trim_start_matches('[').trim_end_matches(']').to_string();
-    let port = uri.port_u16().unwrap_or(if uri.scheme_str() == Some("wss") { 443 } else { 80 });
-    let addrs = tokio::time::timeout(Duration::from_secs(3), tokio::net::lookup_host((host, port))).await.ok()?.ok()?;
+    let host = uri
+        .host()?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    let port = uri
+        .port_u16()
+        .unwrap_or(if uri.scheme_str() == Some("wss") {
+            443
+        } else {
+            80
+        });
+    let addrs = tokio::time::timeout(
+        Duration::from_secs(3),
+        tokio::net::lookup_host((host, port)),
+    )
+    .await
+    .ok()?
+    .ok()?;
     addrs.into_iter().find(SocketAddr::is_ipv4)
 }
 
 async fn probe(sock: &UdpSocket, server: SocketAddr) -> Option<SocketAddr> {
     let mut nonce = [0u8; 16];
     getrandom::fill(&mut nonce).ok()?;
-    let req = peerly_proto::encode(&ProbeRequest { magic: MAGIC, nonce }).ok()?;
+    let req = peerly_proto::encode(&ProbeRequest {
+        magic: MAGIC,
+        nonce,
+    })
+    .ok()?;
     let mut buf = [0u8; 512];
     for _ in 0..PROBE_ATTEMPTS {
         if sock.send_to(&req, server).await.is_err() {
@@ -112,7 +136,9 @@ pub(crate) fn is_lan(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
         IpAddr::V6(v6) => {
-            v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80
+            v6.is_loopback()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
         }
     }
 }
@@ -123,7 +149,12 @@ pub(crate) fn sanitize(candidates: Vec<SocketAddr>) -> Vec<SocketAddr> {
     let mut out: Vec<SocketAddr> = Vec::new();
     for a in candidates.into_iter().map(normalize) {
         let IpAddr::V4(ip) = a.ip() else { continue };
-        if !ip.is_unspecified() && !ip.is_multicast() && !ip.is_broadcast() && a.port() != 0 && !out.contains(&a) {
+        if !ip.is_unspecified()
+            && !ip.is_multicast()
+            && !ip.is_broadcast()
+            && a.port() != 0
+            && !out.contains(&a)
+        {
             out.push(a);
         }
     }

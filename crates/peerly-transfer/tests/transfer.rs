@@ -31,9 +31,20 @@ async fn transfer(paths: Vec<PathBuf>, dest: &Path, accept: bool) -> Outcome {
     let (rtx, rrx) = unbounded_channel();
     let (send, recv) = tokio::join!(
         peerly_transfer::send(&p.sender, &paths, stx, CancellationToken::new()),
-        peerly_transfer::receive(&p.receiver, dest, |_| async move { accept }, rtx, CancellationToken::new()),
+        peerly_transfer::receive(
+            &p.receiver,
+            dest,
+            |_| async move { accept },
+            rtx,
+            CancellationToken::new()
+        ),
     );
-    Outcome { send, recv, send_events: drain(srx), recv_events: drain(rrx) }
+    Outcome {
+        send,
+        recv,
+        send_events: drain(srx),
+        recv_events: drain(rrx),
+    }
 }
 
 fn assert_ok(o: &Outcome) {
@@ -58,13 +69,29 @@ async fn single_file() {
     let s = o.recv.unwrap();
     assert_eq!((s.files, s.bytes), (1, 300_000));
 
-    let TransferEvent::Offered(m) = &o.recv_events[0] else { panic!("{:?}", o.recv_events) };
+    let TransferEvent::Offered(m) = &o.recv_events[0] else {
+        panic!("{:?}", o.recv_events)
+    };
     assert_eq!(m.name, "hello.bin");
     for evs in [&o.send_events, &o.recv_events] {
-        assert!(evs.contains(&TransferEvent::Started { total_bytes: 300_000, total_files: 1 }));
-        assert!(evs.contains(&TransferEvent::FileCompleted { path: "hello.bin".into() }));
-        let last = evs.iter().rev().find(|e| matches!(e, TransferEvent::Progress { .. }));
-        assert_eq!(last, Some(&TransferEvent::Progress { bytes_done: 300_000, bytes_total: 300_000 }));
+        assert!(evs.contains(&TransferEvent::Started {
+            total_bytes: 300_000,
+            total_files: 1
+        }));
+        assert!(evs.contains(&TransferEvent::FileCompleted {
+            path: "hello.bin".into()
+        }));
+        let last = evs
+            .iter()
+            .rev()
+            .find(|e| matches!(e, TransferEvent::Progress { .. }));
+        assert_eq!(
+            last,
+            Some(&TransferEvent::Progress {
+                bytes_done: 300_000,
+                bytes_total: 300_000
+            })
+        );
     }
 }
 
@@ -82,7 +109,9 @@ async fn nested_folder_with_empty_dir_and_zero_byte_file() {
 
     let o = transfer(vec![root.clone(), extra], dst.path(), true).await;
     assert_ok(&o);
-    let TransferEvent::Offered(m) = &o.recv_events[0] else { panic!() };
+    let TransferEvent::Offered(m) = &o.recv_events[0] else {
+        panic!()
+    };
     assert_eq!(m.name, "2 items");
     assert_eq!(m.empty_dirs, ["photos/empty/inner"]);
     assert_eq!(snapshot(&root), snapshot(&dst.path().join("photos")));
@@ -95,7 +124,10 @@ async fn many_small_files() {
     let dst = tempfile::tempdir().unwrap();
     let root = src.path().join("album");
     for i in 0..500u64 {
-        write(&root.join(format!("d{}/img_{i:04}.jpg", i % 10)), &data(1000 + (i as usize * 37) % 4000, i));
+        write(
+            &root.join(format!("d{}/img_{i:04}.jpg", i % 10)),
+            &data(1000 + (i as usize * 37) % 4000, i),
+        );
     }
     let t = std::time::Instant::now();
     let o = transfer(vec![root.clone()], dst.path(), true).await;
@@ -113,8 +145,16 @@ async fn reject() {
     let f = src.path().join("x.txt");
     write(&f, b"nope");
     let o = transfer(vec![f], dst.path(), false).await;
-    assert!(matches!(o.send, Err(TransferError::Rejected)), "{:?}", o.send);
-    assert!(matches!(o.recv, Err(TransferError::Rejected)), "{:?}", o.recv);
+    assert!(
+        matches!(o.send, Err(TransferError::Rejected)),
+        "{:?}",
+        o.send
+    );
+    assert!(
+        matches!(o.recv, Err(TransferError::Rejected)),
+        "{:?}",
+        o.recv
+    );
     assert!(snapshot(dst.path()).is_empty());
 }
 
@@ -126,7 +166,12 @@ async fn name_collision_gets_suffix() {
     write(&src.path().join("photos/a.jpg"), b"new-a");
     write(&dst.path().join("report.pdf"), b"old");
     write(&dst.path().join("photos/a.jpg"), b"old-a");
-    let o = transfer(vec![src.path().join("report.pdf"), src.path().join("photos")], dst.path(), true).await;
+    let o = transfer(
+        vec![src.path().join("report.pdf"), src.path().join("photos")],
+        dst.path(),
+        true,
+    )
+    .await;
     assert_ok(&o);
     let snap = snapshot(dst.path());
     assert_eq!(snap["report.pdf"].as_deref(), Some(&b"old"[..]));
@@ -167,10 +212,21 @@ async fn cancel_mid_transfer(cancel_receiver: bool) {
         peerly_transfer::receive(&p.receiver, dst.path(), |_| async { true }, rtx, rt),
         canceller,
     );
-    let (mine, theirs) = if cancel_receiver { (&recv, &send) } else { (&send, &recv) };
+    let (mine, theirs) = if cancel_receiver {
+        (&recv, &send)
+    } else {
+        (&send, &recv)
+    };
     assert!(matches!(mine, Err(TransferError::Cancelled)), "{mine:?}");
-    assert!(matches!(theirs, Err(TransferError::PeerCancelled(_))), "{theirs:?}");
-    assert!(no_part_files(dst.path()), "{:?}", snapshot(dst.path()).keys().collect::<Vec<_>>());
+    assert!(
+        matches!(theirs, Err(TransferError::PeerCancelled(_))),
+        "{theirs:?}"
+    );
+    assert!(
+        no_part_files(dst.path()),
+        "{:?}",
+        snapshot(dst.path()).keys().collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]
@@ -184,20 +240,35 @@ async fn sender_cancel_cleans_part_files() {
 }
 
 /// Hand-rolled malicious sender: speaks the protocol directly.
-async fn evil_sender(conn: &quinn::Connection, m: Manifest, payload: &[u8], trailer: [u8; 32]) -> Control {
+async fn evil_sender(
+    conn: &quinn::Connection,
+    m: Manifest,
+    payload: &[u8],
+    trailer: [u8; 32],
+) -> Control {
     let (mut tx, mut rx) = conn.open_bi().await.unwrap();
     write_frame(&mut tx, &Control::Offer(m)).await.unwrap();
     let reply: Control = read_frame(&mut rx).await.unwrap();
     if reply == Control::Accept {
         let mut s = conn.open_uni().await.unwrap();
-        write_frame(&mut s, &StreamHeader { index: 0, offset: 0 }).await.unwrap();
+        write_frame(
+            &mut s,
+            &StreamHeader {
+                index: 0,
+                offset: 0,
+            },
+        )
+        .await
+        .unwrap();
         s.write_all(payload).await.unwrap();
         s.write_all(&trailer).await.unwrap();
         s.finish().unwrap();
         return tokio::time::timeout(Duration::from_secs(5), read_frame(&mut rx))
             .await
             .unwrap()
-            .unwrap_or(Control::Cancel { reason: "conn closed".into() });
+            .unwrap_or(Control::Cancel {
+                reason: "conn closed".into(),
+            });
     }
     reply
 }
@@ -205,7 +276,11 @@ async fn evil_sender(conn: &quinn::Connection, m: Manifest, payload: &[u8], trai
 fn one_file(path: &str, size: u64) -> Manifest {
     Manifest {
         name: path.into(),
-        files: vec![FileEntry { index: 0, path: path.into(), size }],
+        files: vec![FileEntry {
+            index: 0,
+            path: path.into(),
+            size,
+        }],
         empty_dirs: vec![],
         total_size: size,
     }
@@ -218,9 +293,18 @@ async fn malicious_path_is_refused() {
     let (rtx, _rrx) = unbounded_channel();
     let (reply, recv) = tokio::join!(
         evil_sender(&p.sender, one_file("../escape.txt", 3), b"abc", [0; 32]),
-        peerly_transfer::receive(&p.receiver, dst.path(), |_| async { true }, rtx, CancellationToken::new()),
+        peerly_transfer::receive(
+            &p.receiver,
+            dst.path(),
+            |_| async { true },
+            rtx,
+            CancellationToken::new()
+        ),
     );
-    assert!(matches!(recv, Err(TransferError::UnsafePath(_))), "{recv:?}");
+    assert!(
+        matches!(recv, Err(TransferError::UnsafePath(_))),
+        "{recv:?}"
+    );
     assert!(matches!(reply, Control::Cancel { .. }), "{reply:?}");
     assert!(snapshot(dst.path()).is_empty());
 }
@@ -232,11 +316,24 @@ async fn hash_mismatch_is_detected() {
     let (rtx, _rrx) = unbounded_channel();
     let (reply, recv) = tokio::join!(
         evil_sender(&p.sender, one_file("x.bin", 3), b"abc", [7; 32]),
-        peerly_transfer::receive(&p.receiver, dst.path(), |_| async { true }, rtx, CancellationToken::new()),
+        peerly_transfer::receive(
+            &p.receiver,
+            dst.path(),
+            |_| async { true },
+            rtx,
+            CancellationToken::new()
+        ),
     );
-    assert!(matches!(recv, Err(TransferError::HashMismatch(_))), "{recv:?}");
+    assert!(
+        matches!(recv, Err(TransferError::HashMismatch(_))),
+        "{recv:?}"
+    );
     assert!(matches!(reply, Control::Cancel { .. }), "{reply:?}");
-    assert!(snapshot(dst.path()).is_empty(), "{:?}", snapshot(dst.path()).keys().collect::<Vec<_>>());
+    assert!(
+        snapshot(dst.path()).is_empty(),
+        "{:?}",
+        snapshot(dst.path()).keys().collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test]
@@ -247,7 +344,13 @@ async fn short_stream_is_protocol_error() {
     let hash = *blake3::hash(b"ab").as_bytes();
     let (_, recv) = tokio::join!(
         evil_sender(&p.sender, one_file("x.bin", 40), b"ab", hash),
-        peerly_transfer::receive(&p.receiver, dst.path(), |_| async { true }, rtx, CancellationToken::new()),
+        peerly_transfer::receive(
+            &p.receiver,
+            dst.path(),
+            |_| async { true },
+            rtx,
+            CancellationToken::new()
+        ),
     );
     assert!(matches!(recv, Err(TransferError::Protocol(_))), "{recv:?}");
     assert!(snapshot(dst.path()).is_empty());
@@ -265,7 +368,11 @@ async fn large_file_throughput() {
     assert_ok(&o);
     let s = o.send.unwrap();
     let mbps = SIZE as f64 / (1024.0 * 1024.0) / s.elapsed.as_secs_f64();
-    println!("64 MiB in {:?} -> {mbps:.1} MiB/s ({:.0} Mbit/s)", s.elapsed, mbps * 8.388_608);
+    println!(
+        "64 MiB in {:?} -> {mbps:.1} MiB/s ({:.0} Mbit/s)",
+        s.elapsed,
+        mbps * 8.388_608
+    );
     let got = std::fs::read(dst.path().join("big.bin")).unwrap();
     assert!(got == bytes, "content differs");
 }

@@ -1,7 +1,7 @@
 //! Peerly rendezvous server.
 //! Usage: `peerly-rendezvous [--listen 0.0.0.0:9009]` (WebSocket on TCP + UDP probe on the same port).
 
-use peerly_rendezvous::{run, ServerConfig};
+use peerly_rendezvous::{ServerConfig, run};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

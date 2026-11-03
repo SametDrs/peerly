@@ -86,7 +86,9 @@ pub struct PendingSend {
 
 impl std::fmt::Debug for PendingSend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PendingSend").field("rendezvous_url", &self.cfg.rendezvous_url).finish_non_exhaustive()
+        f.debug_struct("PendingSend")
+            .field("rendezvous_url", &self.cfg.rendezvous_url)
+            .finish_non_exhaustive()
     }
 }
 
@@ -112,11 +114,19 @@ pub async fn allocate(cfg: &Config) -> Result<PendingSend, PairingError> {
     let mut rv = rendezvous::Client::connect(&cfg.rendezvous_url).await?;
     let nameplate = rv.allocate().await?;
     let code = code::Code::generate(nameplate).to_string();
-    Ok(PendingSend { code, cfg: cfg.clone(), rv })
+    Ok(PendingSend {
+        code,
+        cfg: cfg.clone(),
+        rv,
+    })
 }
 
 /// Receiver side: join with the code typed by the user.
-pub async fn join(cfg: &Config, code: &str, cancel: CancellationToken) -> Result<Paired, PairingError> {
+pub async fn join(
+    cfg: &Config,
+    code: &str,
+    cancel: CancellationToken,
+) -> Result<Paired, PairingError> {
     let code = code::Code::parse(code).ok_or(PairingError::InvalidCode)?;
     cancellable(&cancel, async {
         let mut rv = rendezvous::Client::connect(&cfg.rendezvous_url).await?;
@@ -152,7 +162,8 @@ async fn next_pairing_msg(
             .await
             .map_err(|_| PairingError::Timeout)??,
     };
-    peerly_proto::decode(&payload).map_err(|e| PairingError::Protocol(format!("bad pairing message: {e}")))
+    peerly_proto::decode(&payload)
+        .map_err(|e| PairingError::Protocol(format!("bad pairing message: {e}")))
 }
 
 /// Steps 3–6: SPAKE2, sealed `PeerInfo` exchange, then QUIC by role.
@@ -163,26 +174,37 @@ async fn pair(
     cfg: &Config,
     mut early: Option<Vec<u8>>,
 ) -> Result<Paired, PairingError> {
-    let (pake, outbound) =
-        Spake2::<Ed25519Group>::start_symmetric(&Password::new(password.as_bytes()), &Identity::new(PAKE_IDENTITY));
+    let (pake, outbound) = Spake2::<Ed25519Group>::start_symmetric(
+        &Password::new(password.as_bytes()),
+        &Identity::new(PAKE_IDENTITY),
+    );
     rv.relay(&PairingMsg::Pake(outbound)).await?;
 
     // Probe + cert generation run while we wait for the peer's PAKE message.
     let (local, peer_pake) = tokio::join!(net::prepare(&cfg.rendezvous_url), async {
         match next_pairing_msg(&mut rv, &mut early).await? {
             PairingMsg::Pake(m) => Ok(m),
-            other => Err(PairingError::Protocol(format!("expected PAKE message, got {other:?}"))),
+            other => Err(PairingError::Protocol(format!(
+                "expected PAKE message, got {other:?}"
+            ))),
         }
     });
     let (local, peer_pake) = (local?, peer_pake?);
-    let shared = pake.finish(&peer_pake).map_err(|e| PairingError::Protocol(format!("PAKE failed: {e:?}")))?;
+    let shared = pake
+        .finish(&peer_pake)
+        .map_err(|e| PairingError::Protocol(format!("PAKE failed: {e:?}")))?;
 
     let keys = Keys::derive(&shared, role);
-    let mine = PeerInfo { cert_fingerprint: local.identity.fingerprint, candidates: local.candidates.clone() };
+    let mine = PeerInfo {
+        cert_fingerprint: local.identity.fingerprint,
+        candidates: local.candidates.clone(),
+    };
     rv.relay(&keys.seal(&mine)?).await?;
     let peer = match next_pairing_msg(&mut rv, &mut early).await? {
         PairingMsg::Sealed { nonce, ciphertext } => keys.open(nonce, &ciphertext)?,
-        PairingMsg::Pake(_) => return Err(PairingError::Protocol("unexpected PAKE message".into())),
+        PairingMsg::Pake(_) => {
+            return Err(PairingError::Protocol("unexpected PAKE message".into()));
+        }
     };
     rv.close().await;
     tracing::debug!(?role, candidates = ?peer.candidates, "peer info exchanged");

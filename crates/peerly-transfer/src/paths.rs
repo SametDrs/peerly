@@ -13,9 +13,36 @@ pub(crate) const PART_SUFFIX: &str = ".peerly-part";
 const MAX_COMPONENT_LEN: usize = 255;
 
 const RESERVED: &[&str] = &[
-    "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "COM1", "COM2", "COM3", "COM4", "COM5",
-    "COM6", "COM7", "COM8", "COM9", "COM\u{b9}", "COM\u{b2}", "COM\u{b3}", "LPT1", "LPT2", "LPT3",
-    "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "LPT\u{b9}", "LPT\u{b2}", "LPT\u{b3}",
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    "CONIN$",
+    "CONOUT$",
+    "COM1",
+    "COM2",
+    "COM3",
+    "COM4",
+    "COM5",
+    "COM6",
+    "COM7",
+    "COM8",
+    "COM9",
+    "COM\u{b9}",
+    "COM\u{b2}",
+    "COM\u{b3}",
+    "LPT1",
+    "LPT2",
+    "LPT3",
+    "LPT4",
+    "LPT5",
+    "LPT6",
+    "LPT7",
+    "LPT8",
+    "LPT9",
+    "LPT\u{b9}",
+    "LPT\u{b2}",
+    "LPT\u{b3}",
 ];
 
 /// Validate one path component. Returns a human-readable reason on failure.
@@ -107,10 +134,16 @@ pub(crate) fn validate_manifest(m: &Manifest) -> Result<(), TransferError> {
     }
     // A file must not also be used as a directory (`a` and `a/b`).
     if let Some(f) = m.files.iter().find(|f| dirs.contains(&dup_key(&f.path))) {
-        return Err(proto(format!("path {:?} is both a file and a directory", f.path)));
+        return Err(proto(format!(
+            "path {:?} is both a file and a directory",
+            f.path
+        )));
     }
     if total != m.total_size {
-        return Err(proto(format!("total_size {} != sum of files {total}", m.total_size)));
+        return Err(proto(format!(
+            "total_size {} != sum of files {total}",
+            m.total_size
+        )));
     }
     Ok(())
 }
@@ -190,7 +223,9 @@ pub(crate) fn plan(dest: &Path, m: &Manifest) -> Plan {
     let files: Vec<PathBuf> = m.files.iter().map(|f| map(&f.path)).collect();
     let mut dir_set = HashSet::new();
     let mut dirs = Vec::new();
-    let parents = files.iter().filter_map(|f| f.parent().map(Path::to_path_buf));
+    let parents = files
+        .iter()
+        .filter_map(|f| f.parent().map(Path::to_path_buf));
     for d in parents.chain(m.empty_dirs.iter().map(|d| map(d))) {
         if dir_set.insert(d.clone()) {
             dirs.push(d);
@@ -223,7 +258,11 @@ mod tests {
             files: paths
                 .iter()
                 .enumerate()
-                .map(|(i, p)| FileEntry { index: i as u32, path: (*p).into(), size: 1 })
+                .map(|(i, p)| FileEntry {
+                    index: i as u32,
+                    path: (*p).into(),
+                    size: 1,
+                })
                 .collect(),
             empty_dirs: dirs.iter().map(|d| (*d).into()).collect(),
             total_size: paths.len() as u64,
@@ -232,7 +271,15 @@ mod tests {
 
     #[test]
     fn accepts_normal_paths() {
-        for p in ["a.txt", "photos/2024/IMG 001.jpg", ".bashrc", "über/ñ.txt", "a..b", "con-tent.txt", "COM10"] {
+        for p in [
+            "a.txt",
+            "photos/2024/IMG 001.jpg",
+            ".bashrc",
+            "über/ñ.txt",
+            "a..b",
+            "con-tent.txt",
+            "COM10",
+        ] {
             validate_rel_path(p).unwrap_or_else(|e| panic!("{p}: {e}"));
         }
     }
@@ -240,10 +287,37 @@ mod tests {
     #[test]
     fn rejects_malicious_paths() {
         let bad = [
-            "", "/etc/passwd", "../x", "a/../../x", "a/./b", "./a", "a//b", "a/", "C:/x", "C:x",
-            "c:\\windows", "a\\..\\b", "\\\\server\\share", "a:stream", "nul\0x", "a\nb", "CON",
-            "con.txt", "a/Nul.tar.gz", "LPT9", "com1", "AUX .txt", "trail.", "trail ", "dir./x",
-            "x/CONIN$", "a?b", "a*b", "a|b", "a\"b", "a<b",
+            "",
+            "/etc/passwd",
+            "../x",
+            "a/../../x",
+            "a/./b",
+            "./a",
+            "a//b",
+            "a/",
+            "C:/x",
+            "C:x",
+            "c:\\windows",
+            "a\\..\\b",
+            "\\\\server\\share",
+            "a:stream",
+            "nul\0x",
+            "a\nb",
+            "CON",
+            "con.txt",
+            "a/Nul.tar.gz",
+            "LPT9",
+            "com1",
+            "AUX .txt",
+            "trail.",
+            "trail ",
+            "dir./x",
+            "x/CONIN$",
+            "a?b",
+            "a*b",
+            "a|b",
+            "a\"b",
+            "a<b",
         ];
         for p in bad {
             assert!(
@@ -270,9 +344,15 @@ mod tests {
         m.total_size = 5;
         assert!(proto(&m));
         let m = manifest(&["ok", "../evil"], &[]);
-        assert!(matches!(validate_manifest(&m), Err(TransferError::UnsafePath(_))));
+        assert!(matches!(
+            validate_manifest(&m),
+            Err(TransferError::UnsafePath(_))
+        ));
         let m = manifest(&["ok"], &["/abs"]);
-        assert!(matches!(validate_manifest(&m), Err(TransferError::UnsafePath(_))));
+        assert!(matches!(
+            validate_manifest(&m),
+            Err(TransferError::UnsafePath(_))
+        ));
     }
 
     #[test]
@@ -289,14 +369,28 @@ mod tests {
         std::fs::create_dir(dir.path().join("photos")).unwrap();
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
         std::fs::write(dir.path().join("b.txt.peerly-part"), b"x").unwrap();
-        let m = manifest(&["photos/x.jpg", "a.txt", "a (1).txt", "b.txt"], &["photos/empty"]);
+        let m = manifest(
+            &["photos/x.jpg", "a.txt", "a (1).txt", "b.txt"],
+            &["photos/empty"],
+        );
         let p = plan(dir.path(), &m);
         let rel: Vec<String> = p
             .files
             .iter()
-            .map(|f| f.strip_prefix(dir.path()).unwrap().to_string_lossy().replace('\\', "/"))
+            .map(|f| {
+                f.strip_prefix(dir.path())
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
             .collect();
-        assert_eq!(rel, ["photos (1)/x.jpg", "a (2).txt", "a (1).txt", "b (1).txt"]);
-        assert!(p.dirs.contains(&dir.path().join("photos (1)").join("empty")));
+        assert_eq!(
+            rel,
+            ["photos (1)/x.jpg", "a (2).txt", "a (1).txt", "b (1).txt"]
+        );
+        assert!(
+            p.dirs
+                .contains(&dir.path().join("photos (1)").join("empty"))
+        );
     }
 }

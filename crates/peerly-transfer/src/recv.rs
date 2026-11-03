@@ -36,7 +36,17 @@ where
     let mut ctrl = None;
     let mut workers = JoinSet::new();
     let parts: Parts = Arc::default();
-    let res = run(conn, dest, decide, &events, &cancel, &mut ctrl, &mut workers, &parts).await;
+    let res = run(
+        conn,
+        dest,
+        decide,
+        &events,
+        &cancel,
+        &mut ctrl,
+        &mut workers,
+        &parts,
+    )
+    .await;
     match res {
         Ok(s) => Ok(s),
         Err(e) => {
@@ -126,7 +136,10 @@ where
     .await
     .map_err(join_err)??;
     if available < manifest.total_size {
-        return Err(TransferError::DiskFull { needed: manifest.total_size, available });
+        return Err(TransferError::DiskFull {
+            needed: manifest.total_size,
+            available,
+        });
     }
 
     let _ = events.send(TransferEvent::Offered(manifest.clone()));
@@ -157,7 +170,10 @@ where
     let start = Instant::now();
     let n = manifest.files.len();
     let total = manifest.total_size;
-    let _ = events.send(TransferEvent::Started { total_bytes: total, total_files: n as u32 });
+    let _ = events.send(TransferEvent::Started {
+        total_bytes: total,
+        total_files: n as u32,
+    });
     let shared = Arc::new(Shared {
         seen: (0..n).map(|_| AtomicBool::new(false)).collect(),
         manifest,
@@ -197,7 +213,11 @@ where
     }
     ticker.emit(&shared.bytes, events, true);
     finish_ctrl(conn, tx, Control::Done).await;
-    Ok(Summary { files: n as u32, bytes: total, elapsed: start.elapsed() })
+    Ok(Summary {
+        files: n as u32,
+        bytes: total,
+        elapsed: start.elapsed(),
+    })
 }
 
 async fn recv_file(mut s: quinn::RecvStream, sh: Arc<Shared>) -> Result<(), TransferError> {
@@ -209,15 +229,24 @@ async fn recv_file(mut s: quinn::RecvStream, sh: Arc<Shared>) -> Result<(), Tran
         .get(idx)
         .ok_or_else(|| TransferError::Protocol(format!("unknown file index {idx}")))?;
     if hdr.offset != 0 {
-        return Err(TransferError::Protocol(format!("unsupported offset {}", hdr.offset)));
+        return Err(TransferError::Protocol(format!(
+            "unsupported offset {}",
+            hdr.offset
+        )));
     }
     if sh.seen[idx].swap(true, Ordering::Relaxed) {
-        return Err(TransferError::Protocol(format!("duplicate stream for index {idx}")));
+        return Err(TransferError::Protocol(format!(
+            "duplicate stream for index {idx}"
+        )));
     }
     let target = &sh.targets[idx];
     let part = part_path(target);
     sh.parts.lock().unwrap().insert(part.clone());
-    let mut file = tokio::fs::OpenOptions::new().write(true).create_new(true).open(&part).await?;
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&part)
+        .await?;
 
     // Network chunks are small (~1 packet); batch them into one large buffer so
     // both hashing (SIMD-friendly) and disk writes work on big blocks. tokio's
@@ -228,9 +257,13 @@ async fn recv_file(mut s: quinn::RecvStream, sh: Arc<Shared>) -> Result<(), Tran
     let mut remaining = entry.size;
     while remaining > 0 {
         let max = usize::try_from(remaining).unwrap_or(usize::MAX);
-        let chunk = s.read_chunk(max, true).await.map_err(conn_err)?.ok_or_else(|| {
-            TransferError::Protocol(format!("{}: stream ended early", entry.path))
-        })?;
+        let chunk = s
+            .read_chunk(max, true)
+            .await
+            .map_err(conn_err)?
+            .ok_or_else(|| {
+                TransferError::Protocol(format!("{}: stream ended early", entry.path))
+            })?;
         let len = chunk.bytes.len();
         remaining -= len as u64;
         sh.bytes.fetch_add(len as u64, Ordering::Relaxed);
@@ -258,7 +291,10 @@ async fn recv_file(mut s: quinn::RecvStream, sh: Arc<Shared>) -> Result<(), Tran
         quinn::ReadExactError::ReadError(e) => conn_err(e),
     })?;
     if s.read_chunk(1, true).await.map_err(conn_err)?.is_some() {
-        return Err(TransferError::Protocol(format!("{}: more bytes than announced", entry.path)));
+        return Err(TransferError::Protocol(format!(
+            "{}: more bytes than announced",
+            entry.path
+        )));
     }
     file.flush().await?;
     drop(file);
@@ -267,6 +303,8 @@ async fn recv_file(mut s: quinn::RecvStream, sh: Arc<Shared>) -> Result<(), Tran
     }
     tokio::fs::rename(&part, target).await?;
     sh.parts.lock().unwrap().remove(&part);
-    let _ = sh.events.send(TransferEvent::FileCompleted { path: entry.path.clone() });
+    let _ = sh.events.send(TransferEvent::FileCompleted {
+        path: entry.path.clone(),
+    });
     Ok(())
 }

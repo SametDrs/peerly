@@ -14,3 +14,9 @@ tokio-util.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 serde.workspace = true
+quinn.workspace = true
+
+[dev-dependencies]
+peerly-rendezvous = { path = "../peerly-rendezvous" }
+tempfile = "3.27.0"
+tokio = { workspace = true, features = ["full"] }
