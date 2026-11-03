@@ -2,14 +2,18 @@
   import { onMount } from "svelte";
   import { open } from "@tauri-apps/plugin-dialog";
   import { getCurrentWebview } from "@tauri-apps/api/webview";
+  import { getVersion } from "@tauri-apps/api/app";
   import * as api from "./lib/api";
+  import Icon from "./lib/icons/Icon.svelte";
+  import Sidebar from "./lib/Sidebar.svelte";
+  import { addHistory } from "./lib/history.svelte.js";
   import { ERR_CODES, PEER_HINT_CODES } from "./lib/i18n";
   import { t, formatBytes, formatDuration, type Key } from "./lib/i18n";
 
-  type Screen = "home" | "pick" | "code" | "enter" | "offer" | "progress" | "done" | "error";
+  type Screen = "pick" | "code" | "enter" | "offer" | "progress" | "done" | "error";
   type Role = "send" | "receive";
 
-  let screen = $state<Screen>("home");
+  let screen = $state<Screen>("pick");
   let role = $state<Role>("send");
 
   // send
@@ -22,7 +26,7 @@
   let codeInput = $state("");
   let dest = $state("");
   let connecting = $state(false);
-  /** Sender: between "Start" and the code appearing (DHT lookup, a few seconds). */
+  /** Sender: between "Send" and the code appearing (DHT lookup, a few seconds). */
   let preparing = $state(false);
   let offer = $state<{ name: string; files: number; total_bytes: number } | null>(null);
   // progress
@@ -33,15 +37,27 @@
   let summary = $state({ files: 0, bytes: 0, elapsed_ms: 0 });
   let errorMsg = $state("");
   let errorCode = $state("other");
+  let version = $state("");
+  let now = $state(Date.now());
+  /** Set once a transfer has started; used to write the local history entry. */
+  let active: { name: string; dir: "up" | "down" } | null = null;
   let route = $state<"lan" | "internet" | "">("");
   const errKeys: Record<string, true> = Object.fromEntries(ERR_CODES.map((c) => [`err_${c}`, true]));
 
   const pct = $derived(total > 0 ? Math.min(100, (done / total) * 100) : 0);
   const eta = $derived(speed > 0 ? (total - done) / speed : NaN);
   const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+  const busy = $derived((screen !== "pick" && screen !== "enter") || preparing || connecting);
+  const routeLabel = $derived(route === "lan" ? t("routeLan") : route === "internet" ? t("routeInternet") : "");
+
+  function recordHistory(ok: boolean, bytes: number) {
+    if (!active) return;
+    addHistory({ name: active.name, dir: active.dir, bytes, ok });
+    active = null;
+  }
 
   function reset() {
-    screen = "home";
+    screen = role === "send" ? "pick" : "enter";
     paths = [];
     info = null;
     code = "";
@@ -53,6 +69,7 @@
     currentFile = "";
     errorMsg = "";
     route = "";
+    active = null;
   }
 
   async function goBackAndCancel() {
@@ -87,6 +104,10 @@
         screen = "offer";
         break;
       case "started":
+        active =
+          role === "send"
+            ? { name: paths.length > 1 ? `${baseName(paths[0])} +${paths.length - 1}` : baseName(paths[0] ?? ""), dir: "up" }
+            : { name: offer?.name ?? "", dir: "down" };
         total = e.total_bytes;
         done = 0;
         screen = "progress";
@@ -101,11 +122,13 @@
         break;
       case "completed":
         summary = e;
+        recordHistory(true, e.bytes);
         screen = "done";
         break;
       case "error":
         errorMsg = e.message;
         errorCode = e.code;
+        recordHistory(false, total);
         preparing = false;
         screen = "error";
         break;
@@ -164,10 +187,11 @@
     errorMsg = "";
     connecting = false;
     offer = null;
-    screen = role === "send" ? (paths.length ? "pick" : "home") : "enter";
+    screen = role === "send" ? "pick" : "enter";
   }
 
   function chooseRole(r: Role) {
+    if (busy) return;
     role = r;
     screen = r === "send" ? "pick" : "enter";
   }
@@ -175,176 +199,198 @@
   onMount(() => {
     const unsubs: Array<Promise<() => void>> = [];
     api.defaultDownloadDir().then((d) => (dest = d));
+    getVersion().then((v) => (version = v)).catch(() => {});
+    const tick = setInterval(() => (now = Date.now()), 30000);
     unsubs.push(api.onPeerlyEvent(handleEvent));
     unsubs.push(
       getCurrentWebview().onDragDropEvent((ev) => {
         const p = ev.payload;
-        const accepting = (screen === "home" || screen === "pick") && !preparing;
+        const accepting = role === "send" && screen === "pick" && !preparing;
         if (p.type === "enter" || p.type === "over") dragging = accepting;
         else if (p.type === "leave") dragging = false;
         else if (p.type === "drop") {
           dragging = false;
-          if (accepting && p.paths.length) {
-            role = "send";
-            addPaths(p.paths);
-          }
+          if (accepting && p.paths.length) addPaths(p.paths);
         }
       }),
     );
-    return () => unsubs.forEach((u) => u.then((f) => f()));
+    return () => {
+      clearInterval(tick);
+      unsubs.forEach((u) => u.then((f) => f()));
+    };
   });
 </script>
 
-<main>
-  {#if screen === "home"}
-    <div class="center col" style="padding-top: 8px">
-      <h1>Peerly</h1>
-      <p class="muted">{t("tagline")}</p>
-    </div>
-    <div class="choices">
-      <button class="choice primary" onclick={() => chooseRole("send")}>
-        <span class="title">{t("send")}</span><span class="desc">{t("sendDesc")}</span>
-      </button>
-      <button class="choice" onclick={() => chooseRole("receive")}>
-        <span class="title">{t("receive")}</span><span class="desc">{t("receiveDesc")}</span>
-      </button>
-    </div>
-  {:else if screen === "pick"}
-    <button class="link" onclick={reset} disabled={preparing}>← {t("back")}</button>
-    <h2>{t("send")}</h2>
-    <div class="drop" class:active={dragging}>
-      <p>{t("dropHere")}</p>
-    </div>
-    <div class="row">
-      <button onclick={chooseFiles} disabled={preparing}>{t("chooseFiles")}</button>
-      <button onclick={chooseFolder} disabled={preparing}>{t("chooseFolder")}</button>
-    </div>
-    {#if paths.length}
-      <div class="card col" style="gap: 8px">
-        <div class="row" style="justify-content: space-between">
-          <b style="flex: none">{t("selected", { n: t("items", { n: paths.length }) })}</b>
-          <button class="link" disabled={preparing} style="flex: none; text-align: right" onclick={() => { paths = []; info = null; }}>{t("clear")}</button>
+<div class="shell">
+  <Sidebar {role} {busy} {version} {now} onNav={chooseRole} />
+  <main>
+    <div class="content">
+      {#if screen === "pick"}
+        <header class="col" style="gap: 10px">
+          <h1 class="title">{t("titleSend")}</h1>
+          <p class="lead">{t("descSend")}</p>
+        </header>
+        <div class="chips">
+          <span class="chip"><span class="ic"><Icon name="users" size={14} /></span>{t("chipNoAccount")}</span>
+          <span class="chip"><span class="ic"><Icon name="shield" size={14} /></span>{t("chipE2E")}</span>
+          <span class="chip"><span class="ic"><Icon name="bolt" size={14} /></span>{t("chipFast")}</span>
         </div>
-        {#each paths.slice(0, 4) as p}
-          <div class="path">{baseName(p)}</div>
-        {/each}
-        {#if paths.length > 4}<div class="muted">+{paths.length - 4}</div>{/if}
-        {#if info}
-          <div class="muted">{t("filesCount", { n: info.files })} · {formatBytes(info.bytes)}</div>
+        <div class="drop" class:active={dragging}>
+          <span class="plus"><Icon name="plus" size={26} stroke={2.2} /></span>
+          <b>{t("dropTitle")}</b>
+          <span class="muted">{t("dropOr")}</span>
+          <div class="btns">
+            <button class="outline" onclick={chooseFiles} disabled={preparing}><Icon name="file" />{t("addFiles")}</button>
+            <button class="outline" onclick={chooseFolder} disabled={preparing}><Icon name="folder" />{t("addFolder")}</button>
+          </div>
+        </div>
+        {#if paths.length}
+          <div class="files">
+            <div class="summary">
+              <b>{t("selected", { n: t("items", { n: paths.length }) })}{#if info} <span class="muted" style="font-weight: 400">· {t("filesCount", { n: info.files })} · {formatBytes(info.bytes)}</span>{/if}</b>
+              <button class="link small" disabled={preparing} onclick={() => { paths = []; info = null; }}>{t("clear")}</button>
+            </div>
+            {#each paths.slice(0, 4) as p}
+              <div class="item"><Icon name="file" size={16} /><span class="path">{baseName(p)}</span></div>
+            {/each}
+            {#if paths.length > 4}<div class="muted small" style="padding-left: 4px">+{paths.length - 4}</div>{/if}
+          </div>
         {/if}
-      </div>
-    {/if}
-    <div class="grow"></div>
-    {#if preparing}
-      <p class="center"><span class="spinner"></span>{t("preparing")}</p>
-      <button class="danger" onclick={goBackAndCancel}>{t("cancel")}</button>
-    {:else}
-      <button class="primary" disabled={!paths.length} onclick={startSend}>{t("start")}</button>
-    {/if}
-  {:else if screen === "code"}
-    <h2>{t("yourCode")}</h2>
-    <div class="card"><div class="code">{code}</div></div>
-    <button onclick={copyCode}>{copied ? t("copied") : t("copy")}</button>
-    <p class="muted center">{t("shareCode")}</p>
-    <p class="muted center">{t("waitingHint")}</p>
-    <div class="grow"></div>
-    <p class="center"><span class="pulse"></span>{t("waiting")}</p>
-    <button class="danger" onclick={goBackAndCancel}>{t("cancel")}</button>
-  {:else if screen === "enter"}
-    <button class="link" onclick={reset}>← {t("back")}</button>
-    <h2>{t("receive")}</h2>
-    <label class="col" style="gap: 8px">
-      <span class="muted">{t("enterCode")}</span>
-      <!-- svelte-ignore a11y_autofocus -->
-      <input
-        class="codeinput"
-        autofocus
-        autocomplete="off"
-        autocapitalize="off"
-        spellcheck="false"
-        placeholder={t("codePlaceholder")}
-        bind:value={codeInput}
-        onpaste={(e) => {
-          const txt = e.clipboardData?.getData("text");
-          if (txt) {
-            e.preventDefault();
-            codeInput = normalizeCode(txt);
-          }
-        }}
-        disabled={connecting}
-        onkeydown={(e) => e.key === "Enter" && codeInput.trim() && !connecting && startReceive()}
-      />
-    </label>
-    <div class="card col" style="gap: 6px">
-      <span class="muted">{t("saveTo")}</span>
-      <div class="path">{dest}</div>
-      <button class="link" onclick={chooseDest} disabled={connecting}>{t("change")}</button>
+        <div class="actions">
+          {#if preparing}
+            <span class="status"><span class="spinner"></span>{t("preparing")}</span>
+            <button class="danger" onclick={goBackAndCancel}>{t("cancel")}</button>
+          {:else}
+            {#if !paths.length}<span class="hint"><Icon name="info" size={15} />{t("sendHint")}</span>{/if}
+            <button class="primary with-icon" disabled={!paths.length} onclick={startSend}><Icon name="send" />{t("sendBtn")}</button>
+          {/if}
+        </div>
+      {:else if screen === "code"}
+        <header class="col" style="gap: 10px">
+          <h1 class="title">{t("waitingTitle")}</h1>
+          <p class="lead">{t("shareCode")}</p>
+        </header>
+        <div class="banner">
+          <div class="body">
+            <span class="label">{t("yourCode")}</span>
+            <div class="code">{code}</div>
+          </div>
+          <button class="outline" onclick={copyCode}><Icon name={copied ? "check" : "copy"} />{copied ? t("copied") : t("copy")}</button>
+          <button class="iconbtn" onclick={goBackAndCancel} aria-label={t("cancelAria")} title={t("cancel")}><Icon name="x" /></button>
+        </div>
+        <p class="lead">{t("waitingHint")}</p>
+        <div class="actions" style="justify-content: center">
+          <span class="status"><span class="pulse"></span>{t("waiting")}</span>
+        </div>
+      {:else if screen === "enter"}
+        <header class="col" style="gap: 10px">
+          <h1 class="title">{t("titleReceive")}</h1>
+          <p class="lead">{t("descReceive")}</p>
+        </header>
+        <label class="col" style="gap: 8px">
+          <span class="muted">{t("enterCode")}</span>
+          <span class="inputwrap">
+            <Icon name="key" size={22} />
+            <!-- svelte-ignore a11y_autofocus -->
+            <input
+              class="codeinput"
+              autofocus
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              placeholder={t("codePlaceholder")}
+              bind:value={codeInput}
+              onpaste={(e) => {
+                const txt = e.clipboardData?.getData("text");
+                if (txt) {
+                  e.preventDefault();
+                  codeInput = normalizeCode(txt);
+                }
+              }}
+              disabled={connecting}
+              onkeydown={(e) => e.key === "Enter" && codeInput.trim() && !connecting && startReceive()}
+            />
+          </span>
+        </label>
+        <div class="card destrow">
+          <Icon name="folder" size={22} />
+          <div class="grow">
+            <span class="muted small">{t("saveTo")}</span>
+            <div class="path">{dest}</div>
+          </div>
+          <button class="outline" onclick={chooseDest} disabled={connecting}>{t("change")}</button>
+        </div>
+        <div class="actions" style="flex-direction: column; align-items: stretch; gap: 12px">
+          {#if connecting}
+            <span class="status"><span class="spinner"></span>{t("connecting")}</span>
+            <p class="muted center">{t("connectingHint")}</p>
+            <button class="danger" onclick={goBackAndCancel}>{t("cancel")}</button>
+          {:else}
+            <button class="primary with-icon" style="align-self: flex-end" disabled={!codeInput.trim()} onclick={startReceive}><Icon name="download" />{t("connect")}</button>
+          {/if}
+        </div>
+      {:else if screen === "offer" && offer}
+        <div class="vcenter">
+          {#if routeLabel}<p class="center"><span class="badge">{routeLabel}</span></p>{/if}
+          <p class="center muted">{t("from")}</p>
+          <div class="card col center">
+            <h2>{offer.name}</h2>
+            <p class="muted">{t("filesCount", { n: offer.files })} · {formatBytes(offer.total_bytes)}</p>
+            <p class="path center">{dest}</p>
+          </div>
+        </div>
+        <div class="row">
+          <button onclick={async () => { await api.respondOffer(false); reset(); }}>{t("decline")}</button>
+          <button class="primary" onclick={() => api.respondOffer(true)}>{t("accept")}</button>
+        </div>
+      {:else if screen === "progress"}
+        <div class="vcenter">
+          {#if routeLabel}<p class="center"><span class="badge">{routeLabel}</span></p>{/if}
+          <p class="center muted">{role === "send" ? t("sending") : t("receiving")}</p>
+          <div class="big">{pct.toFixed(0)}%</div>
+          <div class="bar"><div style="width: {pct}%"></div></div>
+          <div class="stats">
+            <div><b>{formatBytes(done)} / {formatBytes(total)}</b><span>&nbsp;</span></div>
+            <div><b>{(speed / 1e6).toFixed(1)} MB/s</b><span>{t("speed")}</span></div>
+            <div><b>{formatDuration(eta)}</b><span>{t("eta")}</span></div>
+          </div>
+          <div class="file">{currentFile}</div>
+        </div>
+        <button class="danger" onclick={goBackAndCancel}>{t("cancel")}</button>
+      {:else if screen === "done"}
+        <div class="vcenter">
+          <div class="hero"><Icon name="check" size={32} stroke={2.4} /></div>
+          <h2 class="center">{t("done")}</h2>
+          <p class="muted center">
+            {t(role === "send" ? "sentSummary" : "receivedSummary", {
+              files: summary.files,
+              size: formatBytes(summary.bytes),
+              time: formatDuration(summary.elapsed_ms / 1000),
+            })}
+          </p>
+        </div>
+        <div class="row">
+          {#if role === "receive"}
+            <button class="outline" onclick={() => api.openFolder(dest)}><Icon name="folderOpen" />{t("openFolder")}</button>
+          {/if}
+          <button class="primary" onclick={reset}>{t(role === "send" ? "sendAnother" : "receiveAnother")}</button>
+        </div>
+      {:else if screen === "error"}
+        <div class="vcenter">
+          <div class="hero bad"><Icon name="alert" size={30} /></div>
+          <h2 class="center err">{t("errorTitle")}</h2>
+          <p class="center">{friendly(errorCode)}</p>
+          {#if PEER_HINT_CODES.includes(errorCode)}<p class="center muted">{t("hintPeer")}</p>{/if}
+          <details>
+            <summary>{t("details")}</summary>
+            <p>{errorMsg}</p>
+          </details>
+        </div>
+        <div class="row">
+          <button onclick={reset}>{t("home")}</button>
+          <button class="primary" onclick={retry}>{t("tryAgain")}</button>
+        </div>
+      {/if}
     </div>
-    <div class="grow"></div>
-    {#if connecting}
-      <p class="center"><span class="spinner"></span>{t("connecting")}</p>
-      <p class="muted center">{t("connectingHint")}</p>
-      <button class="danger" onclick={goBackAndCancel}>{t("cancel")}</button>
-    {:else}
-      <button class="primary" disabled={!codeInput.trim()} onclick={startReceive}>{t("connect")}</button>
-    {/if}
-  {:else if screen === "offer" && offer}
-    <div class="grow"></div>
-    {#if route}<p class="center"><span class="badge">{route === "lan" ? t("routeLan") : t("routeInternet")}</span></p>{/if}
-    <p class="center muted">{t("from")}</p>
-    <div class="card col center">
-      <h2>{offer.name}</h2>
-      <p class="muted">{t("filesCount", { n: offer.files })} · {formatBytes(offer.total_bytes)}</p>
-      <p class="path center">{dest}</p>
-    </div>
-    <div class="grow"></div>
-    <div class="row">
-      <button onclick={async () => { await api.respondOffer(false); reset(); }}>{t("decline")}</button>
-      <button class="primary" onclick={() => api.respondOffer(true)}>{t("accept")}</button>
-    </div>
-  {:else if screen === "progress"}
-    <div class="grow"></div>
-    {#if route}<p class="center"><span class="badge">{route === "lan" ? t("routeLan") : t("routeInternet")}</span></p>{/if}
-    <p class="center muted">{role === "send" ? t("sending") : t("receiving")}</p>
-    <div class="big">{pct.toFixed(0)}%</div>
-    <div class="bar"><div style="width: {pct}%"></div></div>
-    <div class="stats">
-      <div><b>{formatBytes(done)} / {formatBytes(total)}</b><span>&nbsp;</span></div>
-      <div><b>{(speed / 1e6).toFixed(1)} MB/s</b><span>{t("speed")}</span></div>
-      <div><b>{formatDuration(eta)}</b><span>{t("eta")}</span></div>
-    </div>
-    <div class="file">{currentFile}</div>
-    <div class="grow"></div>
-    <button class="danger" onclick={goBackAndCancel}>{t("cancel")}</button>
-  {:else if screen === "done"}
-    <div class="grow"></div>
-    <div class="check">✓</div>
-    <h2 class="center">{t("done")}</h2>
-    <p class="muted center">
-      {t(role === "send" ? "sentSummary" : "receivedSummary", {
-        files: summary.files,
-        size: formatBytes(summary.bytes),
-        time: formatDuration(summary.elapsed_ms / 1000),
-      })}
-    </p>
-    <div class="grow"></div>
-    {#if role === "receive"}
-      <button onclick={() => api.openFolder(dest)}>{t("openFolder")}</button>
-    {/if}
-    <button class="primary" onclick={reset}>{t(role === "send" ? "sendAnother" : "receiveAnother")}</button>
-  {:else if screen === "error"}
-    <div class="grow"></div>
-    <h2 class="center err">{t("errorTitle")}</h2>
-    <p class="center">{friendly(errorCode)}</p>
-    {#if PEER_HINT_CODES.includes(errorCode)}<p class="center muted">{t("hintPeer")}</p>{/if}
-    <details>
-      <summary>{t("details")}</summary>
-      <p style="user-select: text">{errorMsg}</p>
-    </details>
-    <div class="grow"></div>
-    <div class="row">
-      <button onclick={reset}>{t("home")}</button>
-      <button class="primary" onclick={retry}>{t("tryAgain")}</button>
-    </div>
-  {/if}
-</main>
+  </main>
+</div>

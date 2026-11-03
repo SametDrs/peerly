@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Source for `npx tauri icon app-icon.svg`. Peerly mark: two peers meeting. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a2a30"/>
+      <stop offset="1" stop-color="#161618"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.55" r="0.5">
+      <stop offset="0" stop-color="#f97316" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#f97316" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="right">
+      <circle cx="604" cy="512" r="236"/>
+    </clipPath>
+  </defs>
+  <rect x="48" y="48" width="928" height="928" rx="208" fill="url(#bg)"/>
+  <rect x="48" y="48" width="928" height="928" rx="208" fill="url(#glow)"/>
+  <rect x="50" y="50" width="924" height="924" rx="206" fill="none" stroke="#3a3a41" stroke-width="4"/>
+  <!-- overlap lens -->
+  <circle cx="420" cy="512" r="236" fill="#f97316" clip-path="url(#right)"/>
+  <circle cx="420" cy="512" r="236" fill="none" stroke="#f97316" stroke-width="76"/>
+  <circle cx="604" cy="512" r="236" fill="none" stroke="#f4f4f5" stroke-width="76"/>
+</svg>

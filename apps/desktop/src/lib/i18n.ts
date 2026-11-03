@@ -65,6 +65,32 @@ const en = {
   err_hash_mismatch: "A file arrived damaged. Please try again.",
   hintPeer: "Check the code, and make sure both devices are online. On Windows, allow Peerly through the firewall when asked. Some networks (corporate Wi-Fi, mobile hotspots) block direct connections.",
   err_other: "The transfer could not be completed.",
+  titleSend: "Send files straight to another device",
+  descSend: "End-to-end encrypted, no account, no size limit. Your files go directly to the other device.",
+  titleReceive: "Receive files",
+  descReceive: "Enter the code the sender gave you. Files are saved on this device.",
+  chipNoAccount: "No account",
+  chipE2E: "End-to-end encrypted",
+  chipFast: "Direct and fast",
+  dropTitle: "Drop files or folders here",
+  dropOr: "or use the buttons below",
+  addFiles: "Add files",
+  addFolder: "Add folder",
+  sendBtn: "Send",
+  sendHint: "Pick files or a folder to send",
+  recent: "Recent transfers",
+  noRecent: "No transfers yet",
+  sentLabel: "Sent",
+  receivedLabel: "Received",
+  failedLabel: "Failed",
+  agoNow: "now",
+  agoMin: "{n} min",
+  agoHour: "{n} h",
+  agoDay: "{n} d",
+  language: "Language",
+  waitingTitle: "Share this code",
+  cancelAria: "Cancel",
+  remove: "Remove",
   unknown: "—",
 };
 
@@ -135,6 +161,32 @@ const tr: typeof en = {
   err_hash_mismatch: "Bir dosya bozuk ulaştı. Lütfen tekrar deneyin.",
   hintPeer: "Kodu kontrol edin ve iki cihazın da çevrimiçi olduğundan emin olun. Windows'ta sorulursa Peerly'ye güvenlik duvarında izin verin. Bazı ağlar (kurumsal Wi-Fi, mobil hotspot) doğrudan bağlantıyı engeller.",
   err_other: "Aktarım tamamlanamadı.",
+  titleSend: "Dosyaları doğrudan gönder",
+  descSend: "Uçtan uca şifreli, hesap yok, boyut sınırı yok. Dosyalar doğrudan karşı cihaza gider.",
+  titleReceive: "Dosya al",
+  descReceive: "Göndericinin verdiği kodu girin. Dosyalar bu cihaza kaydedilir.",
+  chipNoAccount: "Hesap yok",
+  chipE2E: "Uçtan uca şifreli",
+  chipFast: "Doğrudan ve hızlı",
+  dropTitle: "Dosyaları veya klasörleri buraya sürükle",
+  dropOr: "ya da aşağıdaki düğmeleri kullan",
+  addFiles: "Dosya ekle",
+  addFolder: "Klasör ekle",
+  sendBtn: "Gönder",
+  sendHint: "Göndermek için dosya veya klasör seç",
+  recent: "Son aktarımlar",
+  noRecent: "Henüz aktarım yok",
+  sentLabel: "Gönderildi",
+  receivedLabel: "Alındı",
+  failedLabel: "Başarısız",
+  agoNow: "şimdi",
+  agoMin: "{n} dk",
+  agoHour: "{n} sa",
+  agoDay: "{n} g",
+  language: "Dil",
+  waitingTitle: "Bu kodu paylaş",
+  cancelAria: "İptal",
+  remove: "Kaldır",
   unknown: "—",
 };
 
@@ -143,11 +195,10 @@ export const PEER_HINT_CODES = ["code_not_found", "peer_unreachable", "timeout",
 export const ERR_CODES = ["wrong_code", "code_not_found", "code_in_use", "invalid_code", "rendezvous_unreachable", "peer_unreachable", "peer_left", "timeout", "rejected", "peer_cancelled", "disk_full", "hash_mismatch", "other"];
 
 export type Key = keyof typeof en;
-const lang = (navigator.language || "en").toLowerCase().startsWith("tr") ? "tr" : "en";
-const dict = lang === "tr" ? tr : en;
+import { L } from "./lang.svelte.js";
 
 export function t(key: Key, params: Record<string, string | number> = {}): string {
-  return dict[key].replace(/\{(\w+)\}/g, (_, k) => String(params[k] ?? ""));
+  return (L.lang === "tr" ? tr : en)[key].replace(/\{(\w+)\}/g, (_, k) => String(params[k] ?? ""));
 }
 
 export function formatBytes(n: number): string {
@@ -163,6 +214,7 @@ export function formatBytes(n: number): string {
 }
 
 export function formatDuration(sec: number): string {
+  const lang = L.lang;
   if (!isFinite(sec) || sec < 0) return t("unknown");
   const s = Math.round(sec);
   if (s < 60) return `${s} ${lang === "tr" ? "sn" : "s"}`;
@@ -170,4 +222,12 @@ export function formatDuration(sec: number): string {
   const r = s % 60;
   if (m < 60) return `${m} ${lang === "tr" ? "dk" : "min"} ${r} ${lang === "tr" ? "sn" : "s"}`;
   return `${Math.floor(m / 60)} ${lang === "tr" ? "sa" : "h"} ${m % 60} ${lang === "tr" ? "dk" : "min"}`;
+}
+
+export function formatAgo(ts: number, now = Date.now()): string {
+  const m = Math.floor(Math.max(0, now - ts) / 60000);
+  if (m < 1) return t("agoNow");
+  if (m < 60) return t("agoMin", { n: m });
+  if (m < 1440) return t("agoHour", { n: Math.floor(m / 60) });
+  return t("agoDay", { n: Math.floor(m / 1440) });
 }
