@@ -1,0 +1,16 @@
+[package]
+name = "peerly-core"
+description = "Peerly high-level API: send/receive with a code. Used by the CLI and the desktop app."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+peerly-proto.workspace = true
+peerly-pairing.workspace = true
+peerly-transfer.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true

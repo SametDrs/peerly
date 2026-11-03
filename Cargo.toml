@@ -1,0 +1,34 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+exclude = ["spike-quic"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/peerly-app/peerly"
+
+[workspace.dependencies]
+peerly-proto = { path = "crates/peerly-proto" }
+peerly-transfer = { path = "crates/peerly-transfer" }
+peerly-pairing = { path = "crates/peerly-pairing" }
+peerly-core = { path = "crates/peerly-core" }
+
+anyhow = "1.0.104"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+postcard = { version = "1", features = ["use-std"] }
+tokio = { version = "1.54.1", features = ["full"] }
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+quinn = "0.11.12"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
+rcgen = "0.14.10"
+blake3 = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

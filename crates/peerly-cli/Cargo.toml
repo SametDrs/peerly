@@ -1,0 +1,17 @@
+[package]
+name = "peerly-cli"
+description = "Peerly command line: `peerly send <paths>` / `peerly receive <code>`"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "peerly"
+path = "src/main.rs"
+
+[dependencies]
+peerly-core.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+anyhow.workspace = true
+tracing-subscriber.workspace = true

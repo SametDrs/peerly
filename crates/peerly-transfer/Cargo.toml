@@ -1,0 +1,20 @@
+[package]
+name = "peerly-transfer"
+description = "Peerly file/folder transfer engine over an established QUIC connection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+peerly-proto.workspace = true
+quinn.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+blake3.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+rustls.workspace = true
+rcgen.workspace = true

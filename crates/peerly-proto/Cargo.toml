@@ -1,0 +1,16 @@
+[package]
+name = "peerly-proto"
+description = "Peerly wire protocol: shared message types and framing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
